@@ -1,5 +1,8 @@
 sentry_chassis_controller:
   type: "sentry_chassis_controller/SentryChassisController"
+  cmd_vel_topic: "/cmd_vel"
+  cmd_vel_timeout: 0.25
+  enable_dynamic_reconfigure: true
 
   steer_joints:
     - "front_left_steer_joint"
@@ -18,18 +21,72 @@ sentry_chassis_controller:
     track_width: 0.40
     wheel_radius: 0.076
 
-  command_mode: "base_link"  # base_link | odom
+  steer_zero_offsets: [0.0, 0.0, 0.0, 0.0]
 
   pid:
     steer:
-      p: 5.0
-      i: 0.0
-      d: 0.1
-      i_clamp_min: -1.0
-      i_clamp_max: 1.0
+      front_left:
+        p: 5.0
+        i: 0.0
+        d: 0.1
+        i_clamp_min: -1.0
+        i_clamp_max: 1.0
+        antiwindup: false
+        publish_state: true
+      front_right:
+        p: 5.0
+        i: 0.0
+        d: 0.1
+        i_clamp_min: -1.0
+        i_clamp_max: 1.0
+        antiwindup: false
+        publish_state: true
+      rear_left:
+        p: 5.0
+        i: 0.0
+        d: 0.1
+        i_clamp_min: -1.0
+        i_clamp_max: 1.0
+        antiwindup: false
+        publish_state: true
+      rear_right:
+        p: 5.0
+        i: 0.0
+        d: 0.1
+        i_clamp_min: -1.0
+        i_clamp_max: 1.0
+        antiwindup: false
+        publish_state: true
     wheel:
-      p: 10.0
-      i: 0.0
-      d: 0.2
-      i_clamp_min: -2.0
-      i_clamp_max: 2.0
+      front_left:
+        p: 10.0
+        i: 0.0
+        d: 0.2
+        i_clamp_min: -2.0
+        i_clamp_max: 2.0
+        antiwindup: false
+        publish_state: true
+      front_right:
+        p: 10.0
+        i: 0.0
+        d: 0.2
+        i_clamp_min: -2.0
+        i_clamp_max: 2.0
+        antiwindup: false
+        publish_state: true
+      rear_left:
+        p: 10.0
+        i: 0.0
+        d: 0.2
+        i_clamp_min: -2.0
+        i_clamp_max: 2.0
+        antiwindup: false
+        publish_state: true
+      rear_right:
+        p: 10.0
+        i: 0.0
+        d: 0.2
+        i_clamp_min: -2.0
+        i_clamp_max: 2.0
+        antiwindup: false
+        publish_state: true

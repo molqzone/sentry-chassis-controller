@@ -88,10 +88,13 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(${PROJECT_NAME}-test
     test/test_sentry_chassis_controller.cpp
     test/KinematicsTest.cpp
+    test/SentryChassisControllerPidTest.cpp
   )
   if(TARGET ${PROJECT_NAME}-test)
     target_link_libraries(${PROJECT_NAME}-test
+      ${PROJECT_NAME}
       ${PROJECT_NAME}_core
+      ${catkin_LIBRARIES}
     )
   endif()
 endif()
