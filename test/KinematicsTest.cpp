@@ -6,7 +6,7 @@ using sentry_chassis_controller::Kinematics;
 
 TEST(Kinematics, ZeroInput) {
   Kinematics kinematics;
-  const auto targets = kinematics.computeWheelAngularVelocity(0.0, 0.0, 0.0);
+  const auto targets = kinematics.ComputeWheelAngularVelocity(0.0, 0.0, 0.0);
 
   EXPECT_DOUBLE_EQ(0.0, targets.front_left);
   EXPECT_DOUBLE_EQ(0.0, targets.front_right);
@@ -19,7 +19,7 @@ TEST(Kinematics, ForwardOnly) {
   geometry.wheel_radius = 0.10;
 
   Kinematics kinematics(geometry);
-  const auto targets = kinematics.computeWheelAngularVelocity(1.0, 0.0, 0.0);
+  const auto targets = kinematics.ComputeWheelAngularVelocity(1.0, 0.0, 0.0);
 
   EXPECT_NEAR(10.0, targets.front_left, 1e-6);
   EXPECT_NEAR(10.0, targets.front_right, 1e-6);
@@ -34,7 +34,7 @@ TEST(Kinematics, PureYaw) {
   geometry.wheel_radius = 0.10;
 
   Kinematics kinematics(geometry);
-  const auto targets = kinematics.computeWheelAngularVelocity(0.0, 0.0, 1.0);
+  const auto targets = kinematics.ComputeWheelAngularVelocity(0.0, 0.0, 1.0);
 
   EXPECT_NEAR(-5.0, targets.front_left, 1e-6);
   EXPECT_NEAR(5.0, targets.front_right, 1e-6);

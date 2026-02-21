@@ -21,9 +21,9 @@ class Kinematics {
 
   explicit Kinematics(const Geometry& geometry);
 
-  void setGeometry(const Geometry& geometry);
+  void SetGeometry(const Geometry& geometry);
 
-  WheelTargets computeWheelAngularVelocity(double vx, double vy, double wz) const;
+  WheelTargets ComputeWheelAngularVelocity(double vx, double vy, double wz) const;
 
  private:
   Geometry geometry_;

@@ -15,9 +15,9 @@ class SentryChassisControllerNode {
   explicit SentryChassisControllerNode(ros::NodeHandle& node_handle);
 
  private:
-  bool readParameters();
+  bool ReadParameters();
 
-  void cmdVelCallback(const geometry_msgs::TwistConstPtr& message);
+  void CmdVelCallback(const geometry_msgs::TwistConstPtr& message);
 
   ros::NodeHandle& node_handle_;
   ros::Subscriber cmd_vel_subscriber_;

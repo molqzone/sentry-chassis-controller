@@ -7,6 +7,7 @@
 - 目录结构：`include/`、`src/`、`config/`、`launch/`、`test/`、`doc/`。
 - 构建结构：核心算法库（`kinematics`）+ 节点入口（`sentry_chassis_controller_node`）+ gtest。
 - 参数加载：默认参数（`config/default.yaml`）+ 覆盖参数启动文件。
+- 节点文件命名：节点逻辑在 `src/sentry_chassis_controller_node.cpp`，启动入口在 `src/sentry_chassis_controller_node_main.cpp`，对应头文件 `include/sentry_chassis_controller/sentry_chassis_controller_node.hpp`。
 
 ## 项目特有内容
 

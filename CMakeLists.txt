@@ -42,11 +42,11 @@ add_library(${PROJECT_NAME}
 )
 
 add_library(${PROJECT_NAME}_node_core
-  src/SentryChassisControllerNode.cpp
+  src/sentry_chassis_controller_node.cpp
 )
 
 add_executable(${PROJECT_NAME}_node
-  src/sentry_chassis_controller_node.cpp
+  src/sentry_chassis_controller_node_main.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}_core
