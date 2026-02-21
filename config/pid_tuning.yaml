@@ -1,0 +1,66 @@
+tuning:
+  sample_hz: 200
+  sequence_duration_sec: 6.0
+  warmup_sec: 1.0
+  cooldown_sec: 0.8
+  steer_step_target_rad: 0.20
+  improvement_threshold: 0.15
+  early_stop_no_improve_rounds: 12
+  random_seed: 20260221
+
+profiles:
+  balanced:
+    weights:
+      itae: 0.45
+      settling_time: 0.25
+      overshoot_ratio: 0.20
+      steady_state_error: 0.10
+  fast:
+    weights:
+      itae: 0.30
+      settling_time: 0.40
+      overshoot_ratio: 0.20
+      steady_state_error: 0.10
+  precision:
+    weights:
+      itae: 0.25
+      settling_time: 0.15
+      overshoot_ratio: 0.20
+      steady_state_error: 0.40
+
+impulses:
+  - name: vx
+    vx: 0.8
+    vy: 0.0
+    wz: 0.0
+    pulse_sec: 1.2
+  - name: vy
+    vx: 0.0
+    vy: 0.8
+    wz: 0.0
+    pulse_sec: 1.2
+  - name: wz
+    vx: 0.0
+    vy: 0.0
+    wz: 1.6
+    pulse_sec: 1.2
+
+search:
+  steer:
+    coarse_count: 18
+    refine_top_k: 3
+    refine_per_top: 6
+    bounds:
+      p: [3.0, 9.0]
+      i: [0.0, 0.20]
+      d: [0.05, 0.20]
+    i_clamp_abs: 0.40
+  wheel:
+    coarse_count: 30
+    refine_top_k: 5
+    refine_per_top: 6
+    bounds:
+      p: [0.06, 0.45]
+      i: [0.20, 1.40]
+      d: [0.000, 0.020]
+    i_clamp_abs: 2.00
