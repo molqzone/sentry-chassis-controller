@@ -22,6 +22,7 @@
 控制器命名空间：`/sentry_chassis_controller`
 
 - `cmd_vel_topic`：速度指令话题，默认 `/cmd_vel`
+- `command_frame_id`：速度指令坐标系，当前阶段仅支持 `base_link`
 - `cmd_vel_timeout`：指令超时秒数，超时自动置零，默认 `0.25`
 - `enable_dynamic_reconfigure`：是否启用 `rqt_reconfigure` 在线调参（默认 `true`）
 - `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
@@ -41,6 +42,21 @@
 - `i_clamp_min`、`i_clamp_max`
 - `antiwindup`
 - `publish_state`
+
+## 需求 5 对齐说明（逆运动学）
+
+1. `/cmd_vel` 的 `geometry_msgs/Twist` 按 `base_link` 解释：
+   - `linear.x`：前进方向为正
+   - `linear.y`：左向为正
+   - `angular.z`：绕 z 轴逆时针为正
+2. 轮序固定为：`front_left`、`front_right`、`rear_left`、`rear_right`。
+3. 逆运动学公式：
+   - `fl = (vx - vy - ((wheel_base + track_width) / 2) * wz) / wheel_radius`
+   - `fr = (vx + vy + ((wheel_base + track_width) / 2) * wz) / wheel_radius`
+   - `rl = (vx + vy - ((wheel_base + track_width) / 2) * wz) / wheel_radius`
+   - `rr = (vx - vy + ((wheel_base + track_width) / 2) * wz) / wheel_radius`
+4. 几何参数 `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
+   可直接在 `config/chassis_controller.yaml` 中配置并实时影响目标轮速解算。
 
 ## 在线调参与观测
 

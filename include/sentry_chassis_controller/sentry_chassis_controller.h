@@ -59,6 +59,7 @@ class SentryChassisController
   ros::Subscriber cmd_vel_subscriber_;
   realtime_tools::RealtimeBuffer<CommandData> command_buffer_;
   std::string cmd_vel_topic_ = "/cmd_vel";
+  std::string command_frame_id_ = "base_link";
   double cmd_vel_timeout_ = 0.25;
   bool enable_dynamic_reconfigure_ = true;
 };

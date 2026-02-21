@@ -55,8 +55,15 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   kinematics_.SetGeometry(geometry);
 
   nh.param("cmd_vel_topic", cmd_vel_topic_, std::string("/cmd_vel"));
+  nh.param("command_frame_id", command_frame_id_, std::string("base_link"));
   nh.param("cmd_vel_timeout", cmd_vel_timeout_, 0.25);
   nh.param("enable_dynamic_reconfigure", enable_dynamic_reconfigure_, true);
+  if (command_frame_id_ != "base_link") {
+    ROS_WARN("Parameter 'command_frame_id' is '%s', but only 'base_link' is supported in this "
+             "stage. Falling back to 'base_link'.",
+             command_frame_id_.c_str());
+    command_frame_id_ = "base_link";
+  }
   if (cmd_vel_timeout_ < 0.0) {
     ROS_WARN("Parameter 'cmd_vel_timeout' is negative. Clamping to 0.0.");
     cmd_vel_timeout_ = 0.0;
@@ -94,8 +101,9 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   cmd_vel_subscriber_ =
       nh.subscribe(cmd_vel_topic_, 1, &SentryChassisController::CmdVelCallback, this);
 
-  ROS_INFO("SentryChassisController initialized with cmd_vel_topic='%s', timeout=%.3fs.",
-           cmd_vel_topic_.c_str(), cmd_vel_timeout_);
+  ROS_INFO("SentryChassisController initialized with cmd_vel_topic='%s', command_frame_id='%s', "
+           "timeout=%.3fs.",
+           cmd_vel_topic_.c_str(), command_frame_id_.c_str(), cmd_vel_timeout_);
   return true;
 }
 
@@ -136,6 +144,7 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   CommandData command = *command_buffer_.readFromRT();
   const bool timeout = IsCommandTimedOut(command.valid, command.stamp, time, cmd_vel_timeout_);
 
+  // cmd_vel is interpreted in base_link: +x forward, +y left, +z yaw CCW.
   const double vx = timeout ? 0.0 : command.vx;
   const double vy = timeout ? 0.0 : command.vy;
   const double wz = timeout ? 0.0 : command.wz;
