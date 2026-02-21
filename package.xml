@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>sentry_chassis_controller</name>
+  <version>0.1.0</version>
+  <description>Template-based sentry steering chassis controller for ROS1 Noetic and Gazebo.</description>
+
+  <maintainer email="maintainer@example.com">Sentry Controller Team</maintainer>
+  <author email="maintainer@example.com">Sentry Controller Team</author>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>roscpp</build_depend>
+  <build_depend>controller_interface</build_depend>
+  <build_depend>controller_manager</build_depend>
+  <build_depend>hardware_interface</build_depend>
+  <build_depend>pluginlib</build_depend>
+  <build_depend>control_toolbox</build_depend>
+  <build_depend>dynamic_reconfigure</build_depend>
+  <build_depend>realtime_tools</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+  <build_depend>tf</build_depend>
+  <build_depend>tf2</build_depend>
+  <build_depend>tf2_ros</build_depend>
+
+  <build_export_depend>roscpp</build_export_depend>
+  <build_export_depend>controller_interface</build_export_depend>
+  <build_export_depend>controller_manager</build_export_depend>
+  <build_export_depend>hardware_interface</build_export_depend>
+  <build_export_depend>pluginlib</build_export_depend>
+  <build_export_depend>control_toolbox</build_export_depend>
+  <build_export_depend>dynamic_reconfigure</build_export_depend>
+  <build_export_depend>realtime_tools</build_export_depend>
+  <build_export_depend>geometry_msgs</build_export_depend>
+  <build_export_depend>nav_msgs</build_export_depend>
+  <build_export_depend>tf</build_export_depend>
+  <build_export_depend>tf2</build_export_depend>
+  <build_export_depend>tf2_ros</build_export_depend>
+
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>controller_interface</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>hardware_interface</exec_depend>
+  <exec_depend>pluginlib</exec_depend>
+  <exec_depend>control_toolbox</exec_depend>
+  <exec_depend>dynamic_reconfigure</exec_depend>
+  <exec_depend>realtime_tools</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>tf</exec_depend>
+  <exec_depend>tf2</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <test_depend>rostest</test_depend>
+  <test_depend>gtest</test_depend>
+
+  <export>
+    <controller_interface plugin="${prefix}/sentry_chassis_controller_plugins.xml"/>
+  </export>
+</package>

@@ -1,0 +1,10 @@
+<library path="lib/libsentry_chassis_controller">
+  <class
+      name="sentry_chassis_controller/SentryChassisController"
+      type="sentry_chassis_controller::SentryChassisController"
+      base_class_type="controller_interface::ControllerBase">
+    <description>
+      Base sentry steering chassis controller plugin.
+    </description>
+  </class>
+</library>

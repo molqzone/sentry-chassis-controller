@@ -1,0 +1,6 @@
+cmd_vel_topic: /cmd_vel
+
+geometry:
+  wheel_base: 0.50
+  track_width: 0.40
+  wheel_radius: 0.076

@@ -1,0 +1,10 @@
+<launch>
+  <arg name="default_param_file" value="$(dirname)/../config/default.yaml"/>
+  <arg name="overlying_param_file" default="$(arg default_param_file)"/>
+
+  <node pkg="sentry_chassis_controller" type="sentry_chassis_controller_node"
+        name="sentry_chassis_controller_node" output="screen">
+    <rosparam command="load" file="$(arg default_param_file)"/>
+    <rosparam command="load" file="$(arg overlying_param_file)"/>
+  </node>
+</launch>
