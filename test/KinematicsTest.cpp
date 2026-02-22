@@ -1,10 +1,11 @@
-#include "sentry_chassis_controller/kinematics.hpp"
-
 #include <gtest/gtest.h>
+
+#include "sentry_chassis_controller/kinematics.hpp"
 
 using sentry_chassis_controller::Kinematics;
 
-TEST(Kinematics, ZeroInput) {
+TEST(Kinematics, ZeroInput)
+{
   Kinematics kinematics;
   const auto targets = kinematics.ComputeWheelAngularVelocity(0.0, 0.0, 0.0);
 
@@ -14,7 +15,8 @@ TEST(Kinematics, ZeroInput) {
   EXPECT_DOUBLE_EQ(0.0, targets.rear_right);
 }
 
-TEST(Kinematics, ForwardOnly) {
+TEST(Kinematics, ForwardOnly)
+{
   Kinematics::Geometry geometry;
   geometry.wheel_radius = 0.10;
 
@@ -27,7 +29,8 @@ TEST(Kinematics, ForwardOnly) {
   EXPECT_NEAR(10.0, targets.rear_right, 1e-6);
 }
 
-TEST(Kinematics, PureYaw) {
+TEST(Kinematics, PureYaw)
+{
   Kinematics::Geometry geometry;
   geometry.wheel_base = 0.60;
   geometry.track_width = 0.40;
@@ -42,7 +45,8 @@ TEST(Kinematics, PureYaw) {
   EXPECT_NEAR(5.0, targets.rear_right, 1e-6);
 }
 
-TEST(Kinematics, LateralOnly) {
+TEST(Kinematics, LateralOnly)
+{
   Kinematics::Geometry geometry;
   geometry.wheel_radius = 0.10;
 
@@ -55,7 +59,8 @@ TEST(Kinematics, LateralOnly) {
   EXPECT_NEAR(-10.0, targets.rear_right, 1e-6);
 }
 
-TEST(Kinematics, CombinedMotion) {
+TEST(Kinematics, CombinedMotion)
+{
   Kinematics::Geometry geometry;
   geometry.wheel_base = 0.60;
   geometry.track_width = 0.40;

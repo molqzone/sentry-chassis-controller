@@ -21,7 +21,7 @@ namespace sentry_chassis_controller {
 class SentryChassisController
     : public controller_interface::Controller<hardware_interface::EffortJointInterface> {
  public:
-  static constexpr std::size_t kWheelCount = 4U;
+  static constexpr std::size_t WHEEL_COUNT = 4U;
 
   static bool IsCommandTimedOut(bool command_valid, const ros::Time& command_stamp,
                                 const ros::Time& now, double timeout_sec);
@@ -46,15 +46,15 @@ class SentryChassisController
   void CmdVelCallback(const geometry_msgs::TwistConstPtr& message);
 
   bool InitPidGroup(ros::NodeHandle& nh, const std::string& pid_group,
-                    std::array<control_toolbox::Pid, kWheelCount>* pid_array);
+                    std::array<control_toolbox::Pid, WHEEL_COUNT>* pid_array);
 
   static void SetAllCommands(std::vector<hardware_interface::JointHandle>* joints, double command);
 
   std::vector<hardware_interface::JointHandle> steer_joints_;
   std::vector<hardware_interface::JointHandle> wheel_joints_;
-  std::array<control_toolbox::Pid, kWheelCount> steer_pids_;
-  std::array<control_toolbox::Pid, kWheelCount> wheel_pids_;
-  std::array<double, kWheelCount> steer_zero_offsets_{};
+  std::array<control_toolbox::Pid, WHEEL_COUNT> steer_pids_;
+  std::array<control_toolbox::Pid, WHEEL_COUNT> wheel_pids_;
+  std::array<double, WHEEL_COUNT> steer_zero_offsets_{};
   Kinematics kinematics_;
   ros::Subscriber cmd_vel_subscriber_;
   realtime_tools::RealtimeBuffer<CommandData> command_buffer_;
