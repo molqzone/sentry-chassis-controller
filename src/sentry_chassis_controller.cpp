@@ -1,10 +1,13 @@
 #include "sentry_chassis_controller/sentry_chassis_controller.h"
 
 #include <geometry_msgs/TransformStamped.h>
+#include <geometry_msgs/Vector3Stamped.h>
 #include <hardware_interface/internal/hardware_resource_manager.h>
 #include <nav_msgs/Odometry.h>
 #include <pluginlib/class_list_macros.h>
 #include <tf2/LinearMath/Quaternion.h>
+#include <tf2/exceptions.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include <array>
 #include <cmath>
@@ -19,6 +22,7 @@ namespace
 // Runtime lower bound for wheel radius to avoid division by zero.
 constexpr double MIN_WHEEL_RADIUS = 1e-9;
 constexpr double MIN_VALID_DT = 1e-9;
+constexpr double TF_LOOKUP_TIMEOUT_SEC = 0.02;
 // 轮序后缀固定为前左、前右、后左、后右，需与配置文件和运动学保持一致。
 // Wheel order suffix must stay aligned with config and kinematics.
 const std::array<std::string, SentryChassisController::WHEEL_COUNT> WHEEL_NAME_SUFFIX = {
@@ -87,25 +91,63 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   }
 
   nh.param("cmd_vel_topic", cmd_vel_topic_, std::string("/cmd_vel"));
+  std::string command_velocity_mode_text = "base_link";
+  nh.param("command_velocity_mode", command_velocity_mode_text,
+           std::string("base_link"));
   nh.param("command_frame_id", command_frame_id_, std::string("base_link"));
   nh.param("cmd_vel_timeout", cmd_vel_timeout_, 0.25);
   nh.param("enable_dynamic_reconfigure", enable_dynamic_reconfigure_, true);
   nh.param("odom_topic", odom_topic_, std::string("/odom"));
   nh.param("odom_frame_id", odom_frame_id_, std::string("odom"));
   nh.param("base_frame_id", base_frame_id_, std::string("base_link"));
+  nh.param("odom_startup_hold_sec", odom_startup_hold_sec_, 1.0);
+  nh.param("odom_max_linear_speed", odom_max_linear_speed_, 8.0);
+  nh.param("odom_max_angular_speed", odom_max_angular_speed_, 16.0);
+  nh.param("odom_integrate_on_timeout", odom_integrate_on_timeout_, false);
   nh.param("publish_tf", publish_tf_, true);
-  if (command_frame_id_ != "base_link")
+  if (!ParseCommandVelocityMode(command_velocity_mode_text, &command_velocity_mode_))
+  {
+    ROS_ERROR(
+        "Parameter 'command_velocity_mode' must be 'base_link' or 'global', got '%s'.",
+        command_velocity_mode_text.c_str());
+    return false;
+  }
+  if (command_velocity_mode_ == CommandVelocityMode::BASE_LINK &&
+      command_frame_id_ != base_frame_id_)
   {
     ROS_WARN(
-        "Parameter 'command_frame_id' is '%s', but only 'base_link' is supported in this "
-        "stage. Falling back to 'base_link'.",
-        command_frame_id_.c_str());
-    command_frame_id_ = "base_link";
+        "Parameter 'command_frame_id' is '%s' while command_velocity_mode is "
+        "'base_link'. Falling back to '%s'.",
+        command_frame_id_.c_str(), base_frame_id_.c_str());
+    command_frame_id_ = base_frame_id_;
+  }
+  if (command_velocity_mode_ == CommandVelocityMode::GLOBAL &&
+      command_frame_id_ == base_frame_id_)
+  {
+    ROS_WARN(
+        "command_velocity_mode is 'global' but command_frame_id equals base frame '%s'. "
+        "Global transform will have no effect.",
+        base_frame_id_.c_str());
   }
   if (cmd_vel_timeout_ < 0.0)
   {
     ROS_WARN("Parameter 'cmd_vel_timeout' is negative. Clamping to 0.0.");
     cmd_vel_timeout_ = 0.0;
+  }
+  if (odom_startup_hold_sec_ < 0.0)
+  {
+    ROS_WARN("Parameter 'odom_startup_hold_sec' is negative. Clamping to 0.0.");
+    odom_startup_hold_sec_ = 0.0;
+  }
+  if (odom_max_linear_speed_ <= 0.0)
+  {
+    ROS_WARN("Parameter 'odom_max_linear_speed' must be positive. Clamping to 8.0.");
+    odom_max_linear_speed_ = 8.0;
+  }
+  if (odom_max_angular_speed_ <= 0.0)
+  {
+    ROS_WARN("Parameter 'odom_max_angular_speed' must be positive. Clamping to 16.0.");
+    odom_max_angular_speed_ = 16.0;
   }
 
   steer_joints_.clear();
@@ -144,6 +186,7 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   command.valid = false;
   command_buffer_.writeFromNonRT(command);
   odom_state_ = OdomState();
+  controller_start_time_ = ros::Time(0);
 
   cmd_vel_subscriber_ =
       nh.subscribe(cmd_vel_topic_, 1, &SentryChassisController::CmdVelCallback, this);
@@ -156,17 +199,35 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   {
     tf_broadcaster_.reset();
   }
+  if (command_velocity_mode_ == CommandVelocityMode::GLOBAL)
+  {
+    tf_buffer_.reset(new tf2_ros::Buffer(ros::Duration(10.0)));
+    tf_listener_.reset(new tf2_ros::TransformListener(*tf_buffer_));
+  }
+  else
+  {
+    tf_buffer_.reset();
+    tf_listener_.reset();
+  }
 
   ROS_INFO(
       "SentryChassisController initialized with cmd_vel_topic='%s', "
-      "command_frame_id='%s', "
+      "command_velocity_mode='%s', command_frame_id='%s', "
       "timeout=%.3fs.",
-      cmd_vel_topic_.c_str(), command_frame_id_.c_str(), cmd_vel_timeout_);
+      cmd_vel_topic_.c_str(),
+      command_velocity_mode_ == CommandVelocityMode::BASE_LINK ? "base_link"
+                                                                : "global",
+      command_frame_id_.c_str(), cmd_vel_timeout_);
   ROS_INFO(
       "odometry output configured with topic='%s', odom_frame='%s', base_frame='%s', "
       "publish_tf=%s.",
       odom_topic_.c_str(), odom_frame_id_.c_str(), base_frame_id_.c_str(),
       publish_tf_ ? "true" : "false");
+  ROS_INFO(
+      "odometry stabilization configured with startup_hold=%.3fs, max_linear=%.3fm/s, "
+      "max_angular=%.3frad/s, integrate_on_timeout=%s.",
+      odom_startup_hold_sec_, odom_max_linear_speed_, odom_max_angular_speed_,
+      odom_integrate_on_timeout_ ? "true" : "false");
   ROS_INFO(
       "wheel_direction_signs loaded: vx=[%d,%d,%d,%d], vy=[%d,%d,%d,%d], "
       "wz=[%d,%d,%d,%d].",
@@ -221,6 +282,109 @@ SentryChassisController::OdomState SentryChassisController::IntegrateOdom(
   return result;
 }
 
+bool SentryChassisController::TransformTwistWithTransform(
+    const Kinematics::ChassisTwist& input,
+    const geometry_msgs::TransformStamped& transform, Kinematics::ChassisTwist* output)
+{
+  if (output == nullptr)
+  {
+    return false;
+  }
+
+  geometry_msgs::Vector3Stamped linear_input;
+  linear_input.header.stamp = transform.header.stamp;
+  linear_input.header.frame_id = transform.child_frame_id;
+  linear_input.vector.x = input.vx;
+  linear_input.vector.y = input.vy;
+  linear_input.vector.z = 0.0;
+
+  geometry_msgs::Vector3Stamped linear_output;
+  tf2::doTransform(linear_input, linear_output, transform);
+
+  geometry_msgs::Vector3Stamped angular_input;
+  angular_input.header.stamp = transform.header.stamp;
+  angular_input.header.frame_id = transform.child_frame_id;
+  angular_input.vector.x = 0.0;
+  angular_input.vector.y = 0.0;
+  angular_input.vector.z = input.wz;
+
+  geometry_msgs::Vector3Stamped angular_output;
+  tf2::doTransform(angular_input, angular_output, transform);
+
+  output->vx = linear_output.vector.x;
+  output->vy = linear_output.vector.y;
+  output->wz = angular_output.vector.z;
+  return true;
+}
+
+bool SentryChassisController::ParseCommandVelocityMode(
+    const std::string& mode_text, CommandVelocityMode* mode)
+{
+  if (mode == nullptr)
+  {
+    return false;
+  }
+
+  if (mode_text == "base_link")
+  {
+    *mode = CommandVelocityMode::BASE_LINK;
+    return true;
+  }
+  if (mode_text == "global")
+  {
+    *mode = CommandVelocityMode::GLOBAL;
+    return true;
+  }
+
+  return false;
+}
+
+bool SentryChassisController::ResolveCommandInBaseFrame(const CommandData& command,
+                                                        const ros::Time& time,
+                                                        Kinematics::ChassisTwist* base_twist)
+{
+  if (base_twist == nullptr)
+  {
+    return false;
+  }
+
+  Kinematics::ChassisTwist source_twist;
+  source_twist.vx = command.vx;
+  source_twist.vy = command.vy;
+  source_twist.wz = command.wz;
+
+  if (command_velocity_mode_ == CommandVelocityMode::BASE_LINK)
+  {
+    *base_twist = source_twist;
+    return true;
+  }
+
+  if (!tf_buffer_)
+  {
+    ROS_WARN_THROTTLE(
+        1.0,
+        "Global command mode requires TF listener, but tf_buffer is not initialized.");
+    return false;
+  }
+
+  geometry_msgs::TransformStamped command_to_base_transform;
+  try
+  {
+    command_to_base_transform = tf_buffer_->lookupTransform(
+        base_frame_id_, command_frame_id_, time, ros::Duration(TF_LOOKUP_TIMEOUT_SEC));
+  }
+  catch (const tf2::TransformException& exception)
+  {
+    ROS_WARN_THROTTLE(1.0,
+                      "Failed to transform cmd_vel from '%s' to '%s': %s",
+                      command_frame_id_.c_str(), base_frame_id_.c_str(),
+                      exception.what());
+    return false;
+  }
+
+  return TransformTwistWithTransform(source_twist, command_to_base_transform, base_twist);
+}
+
 void SentryChassisController::starting(const ros::Time& time)
 {
   SetAllCommands(&steer_joints_, 0.0);
@@ -239,6 +403,7 @@ void SentryChassisController::starting(const ros::Time& time)
   command.valid = false;
   command_buffer_.writeFromNonRT(command);
   odom_state_ = OdomState();
+  controller_start_time_ = time;
 }
 
 void SentryChassisController::update(const ros::Time& time, const ros::Duration& period)
@@ -254,10 +419,23 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   const bool TIMEOUT =
       IsCommandTimedOut(command.valid, command.stamp, time, cmd_vel_timeout_);
 
-  // cmd_vel is interpreted in base_link: +x forward, +y left, +z yaw CCW.
-  const double VX = TIMEOUT ? 0.0 : command.vx;
-  const double VY = TIMEOUT ? 0.0 : command.vy;
-  const double WZ = TIMEOUT ? 0.0 : command.wz;
+  // Resolve cmd_vel into base frame before IK:
+  // - base_link mode: direct use
+  // - global mode: transform command_frame -> base_frame via TF.
+  Kinematics::ChassisTwist command_twist_base;
+  if (!TIMEOUT)
+  {
+    const bool COMMAND_RESOLVED =
+        ResolveCommandInBaseFrame(command, time, &command_twist_base);
+    if (!COMMAND_RESOLVED)
+    {
+      command_twist_base = Kinematics::ChassisTwist();
+    }
+  }
+
+  const double VX = command_twist_base.vx;
+  const double VY = command_twist_base.vy;
+  const double WZ = command_twist_base.wz;
   const Kinematics::WheelTargets WHEEL_TARGETS =
       kinematics_.ComputeWheelAngularVelocity(VX, VY, WZ);
   const std::array<double, WHEEL_COUNT> WHEEL_TARGET_VALUES = {
@@ -301,7 +479,40 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   }
   else
   {
-    odom_state_ = IntegrateOdom(odom_state_, odom_twist, DT);
+    if (TIMEOUT && !odom_integrate_on_timeout_)
+    {
+      odom_twist = Kinematics::ChassisTwist();
+    }
+    else
+    {
+      const double STARTUP_AGE = (time - controller_start_time_).toSec();
+      const bool IN_STARTUP_HOLD =
+          STARTUP_AGE >= 0.0 && STARTUP_AGE < odom_startup_hold_sec_;
+      const bool SHOULD_SUPPRESS_STARTUP_DRIFT =
+          odom_integrate_on_timeout_ && TIMEOUT && IN_STARTUP_HOLD;
+
+      if (SHOULD_SUPPRESS_STARTUP_DRIFT)
+      {
+        odom_twist = Kinematics::ChassisTwist();
+        ROS_WARN_THROTTLE(
+            1.0,
+            "Suppress odometry integration during startup hold window (%.3fs remaining).",
+            odom_startup_hold_sec_ - STARTUP_AGE);
+      }
+      else if (!IsOdomTwistAcceptable(odom_twist))
+      {
+        ROS_WARN_THROTTLE(
+            1.0,
+            "Reject abnormal odom twist (vx=%.3f, vy=%.3f, wz=%.3f). Check "
+            "steering alignment/rolling signs.",
+            odom_twist.vx, odom_twist.vy, odom_twist.wz);
+        odom_twist = Kinematics::ChassisTwist();
+      }
+      else
+      {
+        odom_state_ = IntegrateOdom(odom_state_, odom_twist, DT);
+      }
+    }
   }
 
   PublishOdometry(time, odom_twist);
@@ -321,6 +532,7 @@ void SentryChassisController::stopping(const ros::Time& time)
     pid.reset();
   }
   odom_state_ = OdomState();
+  controller_start_time_ = ros::Time(0);
 }
 
 void SentryChassisController::CmdVelCallback(const geometry_msgs::TwistConstPtr& message)
@@ -455,6 +667,19 @@ bool SentryChassisController::ParseDirectionAxis(const std::vector<int>& axis_va
     output->at(i) = axis_values[i];
   }
   return true;
+}
+
+bool SentryChassisController::IsOdomTwistAcceptable(
+    const Kinematics::ChassisTwist& twist) const
+{
+  if (!std::isfinite(twist.vx) || !std::isfinite(twist.vy) || !std::isfinite(twist.wz))
+  {
+    return false;
+  }
+
+  const double LINEAR_SPEED = std::hypot(twist.vx, twist.vy);
+  const double ANGULAR_SPEED = std::fabs(twist.wz);
+  return LINEAR_SPEED <= odom_max_linear_speed_ && ANGULAR_SPEED <= odom_max_angular_speed_;
 }
 
 void SentryChassisController::PublishOdometry(const ros::Time& time,

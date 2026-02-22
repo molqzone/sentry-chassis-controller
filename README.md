@@ -25,12 +25,21 @@
 控制器命名空间：`/sentry_chassis_controller`
 
 - `cmd_vel_topic`：速度指令话题，默认 `/cmd_vel`
-- `command_frame_id`：速度指令坐标系，当前阶段仅支持 `base_link`
+- `command_velocity_mode`：速度指令解析模式
+  - `base_link`：按底盘坐标系模式执行（需求 5）
+  - `global`：按全局坐标系模式执行，需通过 TF 转到底盘坐标系（需求 7）
+- `command_frame_id`：速度指令原始坐标系
+  - `base_link` 模式下必须与 `base_frame_id` 一致
+  - `global` 模式下通常配置为 `odom` 或 `map`
 - `cmd_vel_timeout`：指令超时秒数，超时自动置零，默认 `0.25`
 - `enable_dynamic_reconfigure`：是否启用 `rqt_reconfigure` 在线调参（默认 `true`）
 - `odom_topic`：里程计输出话题，默认 `/odom`
 - `odom_frame_id`：里程计父坐标系，默认 `odom`
 - `base_frame_id`：里程计子坐标系，默认 `base_link`
+- `odom_startup_hold_sec`：启动稳定窗口（秒），仅在 `odom_integrate_on_timeout=true` 时生效，默认 `1.0`
+- `odom_max_linear_speed`：里程计线速度保护上限（m/s），超过则丢弃该周期解算，默认 `8.0`
+- `odom_max_angular_speed`：里程计角速度保护上限（rad/s），超过则丢弃该周期解算，默认 `16.0`
+- `odom_integrate_on_timeout`：指令超时后是否继续积分里程计，默认 `false`（避免启动/空闲漂移）
 - `publish_tf`：是否发布 `odom -> base_link` TF，默认 `true`
 - `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
 - `steer_zero_offsets`：四个舵向零位目标（rad）
@@ -91,6 +100,24 @@
    - `dx = (vx*cos(yaw_mid) - vy*sin(yaw_mid)) * dt`
    - `dy = (vx*sin(yaw_mid) + vy*cos(yaw_mid)) * dt`
 4. 发布 `nav_msgs/Odometry` 到 `/odom`（可配置），并按 `publish_tf` 发布 `odom -> base_link` TF。
+5. 默认在 `cmd_vel` 超时后冻结里程计积分（`odom_integrate_on_timeout=false`），用于抑制无指令阶段的仿真抖动漂移。
+
+## 需求 7 对齐说明（tf 世界坐标速度控制）
+
+1. 在 `command_velocity_mode: global` 时，`/cmd_vel` 被视为 `command_frame_id`（`odom`/`map`）下速度。
+2. 控制器在 `update()` 周期内通过 TF 查询 `command_frame_id -> base_frame_id` 变换，
+   将 `vx/vy/wz` 转为底盘坐标系速度后再执行逆运动学与 PID 闭环。
+3. 在 `command_velocity_mode: base_link` 时保持需求 5 的行为，不引入额外变换。
+4. TF 不可用时会节流告警并将本周期目标速度置零，避免错误坐标系指令导致失控。
+
+示例（全局模式）：
+
+```yaml
+sentry_chassis_controller:
+  command_velocity_mode: global
+  command_frame_id: odom
+  base_frame_id: base_link
+```
 
 ## 在线调参与观测
 
@@ -106,6 +133,4 @@
 ## 后续扩展建议
 
 1. 基于舵轮几何模型实现舵向角实时解算。
-2. 基于轮速反馈实现正运动学里程计并发布 `/odom`。
-3. 增加 `base_link`/`odom` 速度模式切换。
-4. 加入特色功能（加速度限制、小陀螺、功率控制、自锁等）。
+2. 加入特色功能（加速度限制、小陀螺、功率控制、自锁等）。

@@ -20,12 +20,13 @@ find_package(catkin REQUIRED COMPONENTS
   tf
   tf2
   tf2_ros
+  tf2_geometry_msgs
 )
 
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ${PROJECT_NAME}_core ${PROJECT_NAME}
-  CATKIN_DEPENDS roscpp geometry_msgs controller_interface controller_manager hardware_interface pluginlib control_toolbox dynamic_reconfigure realtime_tools nav_msgs tf tf2 tf2_ros
+  CATKIN_DEPENDS roscpp geometry_msgs controller_interface controller_manager hardware_interface pluginlib control_toolbox dynamic_reconfigure realtime_tools nav_msgs tf tf2 tf2_ros tf2_geometry_msgs
 )
 
 include_directories(

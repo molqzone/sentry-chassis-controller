@@ -3,6 +3,7 @@
 
 #include <control_toolbox/pid.h>
 #include <controller_interface/controller.h>
+#include <geometry_msgs/TransformStamped.h>
 #include <geometry_msgs/Twist.h>
 #include <hardware_interface/joint_command_interface.h>
 #include <nav_msgs/Odometry.h>
@@ -11,7 +12,9 @@
 #include <ros/publisher.h>
 #include <ros/subscriber.h>
 #include <ros/time.h>
+#include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/transform_listener.h>
 
 #include <array>
 #include <memory>
@@ -94,6 +97,28 @@ class SentryChassisController
    */
   static OdomState IntegrateOdom(const OdomState& state,
                                  const Kinematics::ChassisTwist& twist, double dt);
+
+  /**
+   * @brief  速度指令解析模式
+   *         Velocity command interpretation mode
+   */
+  enum class CommandVelocityMode
+  {
+    BASE_LINK = 0,   ///< 直接按底盘坐标解释 / Interpret command as base frame
+    GLOBAL = 1,      ///< 按全局坐标解释并转换 / Interpret command as global frame
+  };
+
+  /**
+   * @brief  根据 TF 变换将速度从源坐标系转换到目标坐标系
+   *         Transforms twist from source frame to target frame via TF transform
+   * @param  input 输入速度 Input twist
+   * @param  transform 源到目标的 TF 变换 Source-to-target transform
+   * @param  output 输出速度 Output twist
+   * @return 转换是否成功 Transform success flag
+   */
+  static bool TransformTwistWithTransform(const Kinematics::ChassisTwist& input,
+                                          const geometry_msgs::TransformStamped& transform,
+                                          Kinematics::ChassisTwist* output);
 
   /**
    * @brief  初始化控制器
@@ -180,6 +205,27 @@ class SentryChassisController
                         std::array<int, WHEEL_COUNT>* rolling_signs);
 
   /**
+   * @brief  解析并校验速度指令模式参数
+   *         Parses and validates velocity command mode parameter
+   * @param  mode_text 原始参数文本 Raw parameter text
+   * @param  mode 解析输出 Parsed mode output
+   * @return 解析是否成功 Parse success flag
+   */
+  static bool ParseCommandVelocityMode(const std::string& mode_text,
+                                       CommandVelocityMode* mode);
+
+  /**
+   * @brief  将当前命令统一转换为底盘坐标系速度
+   *         Resolves current command into base-frame twist
+   * @param  command 原始命令 Raw command
+   * @param  time 当前控制时刻 Current control time
+   * @param  base_twist 输出到底盘坐标系的速度 Output base-frame twist
+   * @return 转换是否成功 Resolve success flag
+   */
+  bool ResolveCommandInBaseFrame(const CommandData& command, const ros::Time& time,
+                                 Kinematics::ChassisTwist* base_twist);
+
+  /**
    * @brief  解析单轴方向符号参数
    *         Parses one axis of wheel direction signs
    * @param  axis_values 参数原始数组 Raw parameter array
@@ -190,6 +236,15 @@ class SentryChassisController
   static bool ParseDirectionAxis(const std::vector<int>& axis_values,
                                  const std::string& param_name,
                                  std::array<int, WHEEL_COUNT>* output);
+
+  /**
+   * @brief  判断正运动学输出是否在可接受范围内
+   *         Checks whether forward-kinematics twist is within safe bounds
+   * @param  twist 本周期底盘速度 Current cycle chassis twist
+   * @return 可接受返回 true，否则返回 false
+   *         Returns true when acceptable, false otherwise
+   */
+  bool IsOdomTwistAcceptable(const Kinematics::ChassisTwist& twist) const;
 
   /**
    * @brief  将一组关节命令统一设置为同一数值
@@ -228,14 +283,28 @@ class SentryChassisController
   realtime_tools::RealtimeBuffer<CommandData>
       command_buffer_;  ///< 实时安全指令缓存 Realtime-safe command buffer
   std::string cmd_vel_topic_ = "/cmd_vel";  ///< 指令话题 Command topic
+  CommandVelocityMode command_velocity_mode_ =
+      CommandVelocityMode::BASE_LINK;  ///< 指令解析模式 Command interpretation mode
   std::string command_frame_id_ = "base_link";  ///< 指令坐标系 Command frame id
   double cmd_vel_timeout_ = 0.25;  ///< 指令超时阈值（秒） Command timeout in seconds
   bool enable_dynamic_reconfigure_ = true;  ///< 是否启用动态调参 Enable dynamic reconfigure
   std::string odom_topic_ = "/odom";  ///< 里程计话题 Odometry topic
   std::string odom_frame_id_ = "odom";  ///< 里程计父坐标系 Odom frame id
   std::string base_frame_id_ = "base_link";  ///< 底盘坐标系 Base frame id
+  double odom_startup_hold_sec_ =
+      1.0;  ///< 启动静置窗口（秒） Startup settling window in seconds
+  double odom_max_linear_speed_ =
+      8.0;  ///< 里程计线速度上限（m/s） Odom linear speed limit in m/s
+  double odom_max_angular_speed_ =
+      16.0;  ///< 里程计角速度上限（rad/s） Odom angular speed limit in rad/s
+  bool odom_integrate_on_timeout_ =
+      false;  ///< 指令超时时是否继续积分 Odom integration when cmd times out
   bool publish_tf_ = true;  ///< 是否发布 odom->base_link TF Whether to publish odom TF
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;  ///< TF 缓冲区 TF buffer
+  std::unique_ptr<tf2_ros::TransformListener>
+      tf_listener_;  ///< TF 监听器 TF listener
   OdomState odom_state_;  ///< 累计里程计状态 Integrated odometry state
+  ros::Time controller_start_time_;  ///< 控制器启动时刻 Controller start timestamp
 };
 
 }  // namespace sentry_chassis_controller
