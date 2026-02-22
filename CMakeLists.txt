@@ -63,6 +63,7 @@ if(CATKIN_ENABLE_TESTING)
     test/test_sentry_chassis_controller.cpp
     test/KinematicsTest.cpp
     test/SentryChassisControllerPidTest.cpp
+    test/SentryChassisControllerOdomTest.cpp
   )
   if(TARGET ${PROJECT_NAME}-test)
     target_link_libraries(${PROJECT_NAME}-test

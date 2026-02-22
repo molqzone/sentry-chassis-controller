@@ -13,8 +13,8 @@ TEST(SentryChassisControllerPid, WheelPidCommandBecomesNonZeroForVelocityError)
   control_toolbox::Pid wheel_pid;
   wheel_pid.initPid(2.0, 0.0, 0.0, 2.0, -2.0, false);
 
-  const double effort = wheel_pid.computeCommand(5.0, ros::Duration(0.01));
-  EXPECT_GT(effort, 0.0);
+  const double EFFORT = wheel_pid.computeCommand(5.0, ros::Duration(0.01));
+  EXPECT_GT(EFFORT, 0.0);
 }
 
 TEST(SentryChassisControllerPid, WheelPidCommandReturnsZeroForZeroError)
@@ -23,29 +23,29 @@ TEST(SentryChassisControllerPid, WheelPidCommandReturnsZeroForZeroError)
   wheel_pid.initPid(2.0, 0.0, 0.0, 2.0, -2.0, false);
   wheel_pid.computeCommand(5.0, ros::Duration(0.01));
 
-  const double effort = wheel_pid.computeCommand(0.0, ros::Duration(0.01));
-  EXPECT_NEAR(effort, 0.0, 1e-9);
+  const double EFFORT = wheel_pid.computeCommand(0.0, ros::Duration(0.01));
+  EXPECT_NEAR(EFFORT, 0.0, 1e-9);
 }
 
 TEST(SentryChassisControllerPid, CommandTimeoutDetectsExpiredCommand)
 {
-  const bool timed_out = SentryChassisController::IsCommandTimedOut(
+  const bool TIMED_OUT = SentryChassisController::IsCommandTimedOut(
       true, ros::Time(10.0), ros::Time(10.4), 0.25);
-  EXPECT_TRUE(timed_out);
+  EXPECT_TRUE(TIMED_OUT);
 }
 
 TEST(SentryChassisControllerPid, CommandTimeoutAcceptsFreshCommand)
 {
-  const bool timed_out = SentryChassisController::IsCommandTimedOut(
+  const bool TIMED_OUT = SentryChassisController::IsCommandTimedOut(
       true, ros::Time(10.0), ros::Time(10.2), 0.25);
-  EXPECT_FALSE(timed_out);
+  EXPECT_FALSE(TIMED_OUT);
 }
 
 TEST(SentryChassisControllerPid, CommandTimeoutTreatsInvalidCommandAsTimedOut)
 {
-  const bool timed_out = SentryChassisController::IsCommandTimedOut(
+  const bool TIMED_OUT = SentryChassisController::IsCommandTimedOut(
       false, ros::Time(10.0), ros::Time(10.1), 0.25);
-  EXPECT_TRUE(timed_out);
+  EXPECT_TRUE(TIMED_OUT);
 }
 
 }  // namespace sentry_chassis_controller

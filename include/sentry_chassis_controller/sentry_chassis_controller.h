@@ -5,12 +5,16 @@
 #include <controller_interface/controller.h>
 #include <geometry_msgs/Twist.h>
 #include <hardware_interface/joint_command_interface.h>
+#include <nav_msgs/Odometry.h>
 #include <realtime_tools/realtime_buffer.h>
 #include <ros/node_handle.h>
+#include <ros/publisher.h>
 #include <ros/subscriber.h>
 #include <ros/time.h>
+#include <tf2_ros/transform_broadcaster.h>
 
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -60,6 +64,36 @@ class SentryChassisController
    */
   static bool IsCommandTimedOut(bool command_valid, const ros::Time& command_stamp,
                                 const ros::Time& now, double timeout_sec);
+
+  /**
+   * @brief  2D 里程计状态结构
+   *         2D odometry state structure
+   */
+  struct OdomState
+  {
+    double x = 0.0;    ///< 世界系 x 坐标 World-frame x position
+    double y = 0.0;    ///< 世界系 y 坐标 World-frame y position
+    double yaw = 0.0;  ///< 世界系偏航角 World-frame yaw angle
+  };
+
+  /**
+   * @brief  将角度归一化到 [-pi, pi]
+   *         Normalizes angle to [-pi, pi]
+   * @param  angle 输入角度 Input angle
+   * @return 归一化结果 Normalized angle
+   */
+  static double NormalizeAngle(double angle);
+
+  /**
+   * @brief  基于中点法积分里程计状态
+   *         Integrates odometry state using midpoint method
+   * @param  state 当前里程计状态 Current odometry state
+   * @param  twist 底盘速度（base_link） Chassis twist in base_link
+   * @param  dt 积分步长（秒） Integration time step in seconds
+   * @return 积分后的里程计状态 Integrated odometry state
+   */
+  static OdomState IntegrateOdom(const OdomState& state,
+                                 const Kinematics::ChassisTwist& twist, double dt);
 
   /**
    * @brief  初始化控制器
@@ -136,6 +170,16 @@ class SentryChassisController
                           Kinematics::DirectionSigns* direction_signs);
 
   /**
+   * @brief  读取并校验轮速方向符号参数
+   *         Loads and validates wheel rolling signs
+   * @param  nh 控制器命名空间 Controller namespace
+   * @param  rolling_signs 符号输出 Output rolling signs
+   * @return 读取是否成功 Load success flag
+   */
+  bool LoadRollingSigns(ros::NodeHandle& nh,
+                        std::array<int, WHEEL_COUNT>* rolling_signs);
+
+  /**
    * @brief  解析单轴方向符号参数
    *         Parses one axis of wheel direction signs
    * @param  axis_values 参数原始数组 Raw parameter array
@@ -156,6 +200,14 @@ class SentryChassisController
   static void SetAllCommands(std::vector<hardware_interface::JointHandle>* joints,
                              double command);
 
+  /**
+   * @brief  发布当前里程计与 TF
+   *         Publishes current odometry and TF
+   * @param  time 当前控制时刻 Current control time
+   * @param  twist 本周期底盘速度 Current cycle chassis twist
+   */
+  void PublishOdometry(const ros::Time& time, const Kinematics::ChassisTwist& twist);
+
   std::vector<hardware_interface::JointHandle>
       steer_joints_;  ///< 舵向关节句柄 Steering joint handles
   std::vector<hardware_interface::JointHandle>
@@ -166,14 +218,24 @@ class SentryChassisController
       wheel_pids_;  ///< 4 路轮速 PID 4 wheel PID loops
   std::array<double, WHEEL_COUNT>
       steer_zero_offsets_{};  ///< 舵向零位目标 Steering zero-position targets
+  std::array<int, WHEEL_COUNT>
+      wheel_rolling_signs_{{1, 1, 1, 1}};  ///< 轮速方向符号 Wheel rolling direction signs
   Kinematics kinematics_;  ///< 逆运动学求解器 Inverse kinematics solver
   ros::Subscriber cmd_vel_subscriber_;  ///< 速度指令订阅器 Velocity command subscriber
+  ros::Publisher odom_publisher_;  ///< 里程计发布器 Odometry publisher
+  std::unique_ptr<tf2_ros::TransformBroadcaster>
+      tf_broadcaster_;  ///< TF 广播器 TF broadcaster
   realtime_tools::RealtimeBuffer<CommandData>
       command_buffer_;  ///< 实时安全指令缓存 Realtime-safe command buffer
   std::string cmd_vel_topic_ = "/cmd_vel";  ///< 指令话题 Command topic
   std::string command_frame_id_ = "base_link";  ///< 指令坐标系 Command frame id
   double cmd_vel_timeout_ = 0.25;  ///< 指令超时阈值（秒） Command timeout in seconds
   bool enable_dynamic_reconfigure_ = true;  ///< 是否启用动态调参 Enable dynamic reconfigure
+  std::string odom_topic_ = "/odom";  ///< 里程计话题 Odometry topic
+  std::string odom_frame_id_ = "odom";  ///< 里程计父坐标系 Odom frame id
+  std::string base_frame_id_ = "base_link";  ///< 底盘坐标系 Base frame id
+  bool publish_tf_ = true;  ///< 是否发布 odom->base_link TF Whether to publish odom TF
+  OdomState odom_state_;  ///< 累计里程计状态 Integrated odometry state
 };
 
 }  // namespace sentry_chassis_controller

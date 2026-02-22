@@ -4,6 +4,10 @@ sentry_chassis_controller:
   command_frame_id: base_link
   cmd_vel_timeout: 0.25
   enable_dynamic_reconfigure: true
+  odom_topic: /odom
+  odom_frame_id: odom
+  base_frame_id: base_link
+  publish_tf: true
   steer_joints:
   - left_front_pivot_joint
   - right_front_pivot_joint
@@ -14,6 +18,7 @@ sentry_chassis_controller:
   - right_front_wheel_joint
   - left_back_wheel_joint
   - right_back_wheel_joint
+  wheel_rolling_signs: [1, -1, -1, -1]
   wheel_direction_signs:
     vx: [1, -1, -1, -1]
     vy: [-1, -1, -1, 1]

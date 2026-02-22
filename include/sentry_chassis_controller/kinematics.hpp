@@ -55,6 +55,29 @@ class Kinematics
   };
 
   /**
+   * @brief  底盘速度状态结构（base_link）
+   *         Chassis twist state in base_link
+   */
+  struct ChassisTwist
+  {
+    double vx = 0.0;  ///< x 向线速度 x-axis linear velocity
+    double vy = 0.0;  ///< y 向线速度 y-axis linear velocity
+    double wz = 0.0;  ///< z 向角速度 z-axis angular velocity
+  };
+
+  /**
+   * @brief  四轮反馈状态结构
+   *         Four-wheel feedback state
+   */
+  struct WheelFeedback
+  {
+    std::array<double, 4>
+        steer_position{{0.0, 0.0, 0.0, 0.0}};  ///< 舵角反馈 Steering angle feedback
+    std::array<double, 4> wheel_angular_velocity{
+        {0.0, 0.0, 0.0, 0.0}};  ///< 轮速反馈 Wheel angular velocity feedback
+  };
+
+  /**
    * @brief  三轴轮向符号矩阵
    *         Per-axis wheel direction sign matrix
    *
@@ -111,6 +134,21 @@ class Kinematics
    *         Wheel target angular velocities in fixed wheel order
    */
   WheelTargets ComputeWheelAngularVelocity(double vx, double vy, double wz) const;
+
+  /**
+   * @brief  根据舵角和轮速反馈求解底盘速度
+   *         Solves chassis twist from steering and wheel feedback
+   * @param  feedback 四轮反馈数据 Four-wheel feedback data
+   * @param  steer_zero_offsets 舵向零位偏置 Steering zero offsets
+   * @param  wheel_rolling_signs 轮速方向符号 Signs for wheel rolling direction
+   * @param  twist 求解输出 Solved chassis twist output
+   * @return 求解成功返回 `true`；矩阵退化或参数非法返回 `false`
+   *         Returns `true` on success; `false` if singular/invalid
+   */
+  bool ComputeChassisTwistFromWheelFeedback(
+      const WheelFeedback& feedback,
+      const std::array<double, 4>& steer_zero_offsets,
+      const std::array<int, 4>& wheel_rolling_signs, ChassisTwist* twist) const;
 
  private:
   Geometry geometry_;  ///< 几何参数缓存 Cached geometry

@@ -28,8 +28,13 @@
 - `command_frame_id`：速度指令坐标系，当前阶段仅支持 `base_link`
 - `cmd_vel_timeout`：指令超时秒数，超时自动置零，默认 `0.25`
 - `enable_dynamic_reconfigure`：是否启用 `rqt_reconfigure` 在线调参（默认 `true`）
+- `odom_topic`：里程计输出话题，默认 `/odom`
+- `odom_frame_id`：里程计父坐标系，默认 `odom`
+- `base_frame_id`：里程计子坐标系，默认 `base_link`
+- `publish_tf`：是否发布 `odom -> base_link` TF，默认 `true`
 - `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
 - `steer_zero_offsets`：四个舵向零位目标（rad）
+- `wheel_rolling_signs`：四个轮子的滚动方向符号，轮序固定 `front_left, front_right, rear_left, rear_right`，每项只能为 `-1` 或 `1`
 - `wheel_direction_signs/vx`、`wheel_direction_signs/vy`、`wheel_direction_signs/wz`：
   轮向符号矩阵，轮序固定 `front_left, front_right, rear_left, rear_right`，每项只能为 `-1` 或 `1`
 - 八路 PID（每路独立）：
@@ -74,6 +79,18 @@
   - `vy: [-1, -1, -1, 1]`
   - `wz: [1, 1, 1, -1]`
 - 调参方法：保持轮序不变，针对单轴输入（仅 `vx`、仅 `vy`、仅 `wz`）逐项调整到符号一致。
+
+## 需求 6 对齐说明（正运动学里程计）
+
+1. 在 plugin `update()` 中使用“实际舵角 + 实际轮速”解算底盘实时速度：
+   - 舵角：`steer_position - steer_zero_offsets`
+   - 轮速：`wheel_rolling_signs * wheel_radius * wheel_angular_velocity`
+2. 使用四轮约束的最小二乘正运动学求解 `vx/vy/wz`，当矩阵退化时跳过当周期积分并节流告警。
+3. 里程计采用中点法积分：
+   - `yaw_mid = yaw + 0.5 * wz * dt`
+   - `dx = (vx*cos(yaw_mid) - vy*sin(yaw_mid)) * dt`
+   - `dy = (vx*sin(yaw_mid) + vy*cos(yaw_mid)) * dt`
+4. 发布 `nav_msgs/Odometry` 到 `/odom`（可配置），并按 `publish_tf` 发布 `odom -> base_link` TF。
 
 ## 在线调参与观测
 
