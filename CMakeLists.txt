@@ -24,7 +24,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES ${PROJECT_NAME}_core ${PROJECT_NAME} ${PROJECT_NAME}_node_core
+  LIBRARIES ${PROJECT_NAME}_core ${PROJECT_NAME}
   CATKIN_DEPENDS roscpp geometry_msgs controller_interface controller_manager hardware_interface pluginlib control_toolbox dynamic_reconfigure realtime_tools nav_msgs tf tf2 tf2_ros
 )
 
@@ -41,14 +41,6 @@ add_library(${PROJECT_NAME}
   src/sentry_chassis_controller.cpp
 )
 
-add_library(${PROJECT_NAME}_node_core
-  src/sentry_chassis_controller_node.cpp
-)
-
-add_executable(${PROJECT_NAME}_node
-  src/sentry_chassis_controller_node_main.cpp
-)
-
 target_link_libraries(${PROJECT_NAME}_core
   ${catkin_LIBRARIES}
 )
@@ -58,29 +50,11 @@ target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES}
 )
 
-target_link_libraries(${PROJECT_NAME}_node_core
-  ${PROJECT_NAME}_core
-  ${catkin_LIBRARIES}
-)
-
-target_link_libraries(${PROJECT_NAME}_node
-  ${PROJECT_NAME}_node_core
-  ${catkin_LIBRARIES}
-)
-
 add_dependencies(${PROJECT_NAME}_core
   ${catkin_EXPORTED_TARGETS}
 )
 
 add_dependencies(${PROJECT_NAME}
-  ${catkin_EXPORTED_TARGETS}
-)
-
-add_dependencies(${PROJECT_NAME}_node_core
-  ${catkin_EXPORTED_TARGETS}
-)
-
-add_dependencies(${PROJECT_NAME}_node
   ${catkin_EXPORTED_TARGETS}
 )
 
@@ -102,8 +76,6 @@ endif()
 install(TARGETS
   ${PROJECT_NAME}_core
   ${PROJECT_NAME}
-  ${PROJECT_NAME}_node_core
-  ${PROJECT_NAME}_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -122,6 +94,10 @@ install(FILES
 install(DIRECTORY
   doc
   config
-  launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+install(FILES
+  launch/sentry_chassis_controller.launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
 )

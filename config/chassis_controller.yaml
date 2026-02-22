@@ -14,6 +14,10 @@ sentry_chassis_controller:
   - right_front_wheel_joint
   - left_back_wheel_joint
   - right_back_wheel_joint
+  wheel_direction_signs:
+    vx: [1, -1, -1, -1]
+    vy: [-1, -1, -1, 1]
+    wz: [1, 1, 1, -1]
   geometry:
     wheel_base: 0.362
     track_width: 0.362

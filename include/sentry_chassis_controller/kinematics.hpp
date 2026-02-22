@@ -1,36 +1,120 @@
 #pragma once
 
-namespace sentry_chassis_controller {
+#include <array>
 
-class Kinematics {
+/**
+ * @file   kinematics.hpp
+ * @brief  舵轮底盘逆运动学定义
+ *         Definition of sentry chassis inverse kinematics
+ */
+
+namespace sentry_chassis_controller
+{
+
+/**
+ * @brief  舵轮底盘逆运动学工具类
+ *         Inverse kinematics utility for sentry chassis
+ *
+ * @details
+ * 该类负责把 `base_link` 坐标系下的速度指令 `(vx, vy, wz)` 映射为四个轮子的目标角速度。
+ * 轮序在整个项目内固定为：
+ * `front_left, front_right, rear_left, rear_right`。
+ *
+ * This class maps `base_link` velocity commands `(vx, vy, wz)` to four wheel
+ * target angular velocities. The wheel order is fixed across the project:
+ * `front_left, front_right, rear_left, rear_right`.
+ */
+class Kinematics
+{
  public:
-  // Geometry uses full dimensions: wheel_base is front-rear distance, track_width is
-  // left-right distance.
-  struct Geometry {
-    double wheel_base = 0.50;
-    double track_width = 0.40;
-    double wheel_radius = 0.076;
+  /**
+   * @brief  底盘几何参数（使用整车尺寸）
+   *         Chassis geometry parameters (full dimensions)
+   *
+   * @details
+   * `wheel_base` 为前后轴距，`track_width` 为左右轮距，`wheel_radius` 为轮半径。
+   * `wheel_base` and `track_width` are full distances, not half-lengths.
+   */
+  struct Geometry
+  {
+    double wheel_base = 0.50;    ///< 前后轴距（米） Front-rear wheelbase in meters
+    double track_width = 0.40;   ///< 左右轮距（米） Left-right track width in meters
+    double wheel_radius = 0.076;  ///< 轮半径（米） Wheel radius in meters
   };
 
-  struct WheelTargets {
-    double front_left = 0.0;
-    double front_right = 0.0;
-    double rear_left = 0.0;
-    double rear_right = 0.0;
+  /**
+   * @brief  四轮目标角速度输出结构
+   *         Four-wheel target angular velocity output
+   */
+  struct WheelTargets
+  {
+    double front_left = 0.0;   ///< 前左轮目标角速度 Front-left target angular velocity
+    double front_right = 0.0;  ///< 前右轮目标角速度 Front-right target angular velocity
+    double rear_left = 0.0;    ///< 后左轮目标角速度 Rear-left target angular velocity
+    double rear_right = 0.0;   ///< 后右轮目标角速度 Rear-right target angular velocity
   };
 
+  /**
+   * @brief  三轴轮向符号矩阵
+   *         Per-axis wheel direction sign matrix
+   *
+   * @details
+   * 每个轴均为 4 元素数组，轮序固定为：
+   * `front_left, front_right, rear_left, rear_right`。
+   * Each axis array contains 4 signs with fixed wheel order:
+   * `front_left, front_right, rear_left, rear_right`.
+   */
+  struct DirectionSigns
+  {
+    std::array<int, 4> vx{{1, 1, 1, 1}};  ///< x 轴符号 Signs for vx term
+    std::array<int, 4> vy{{1, 1, 1, 1}};  ///< y 轴符号 Signs for vy term
+    std::array<int, 4> wz{{1, 1, 1, 1}};  ///< z 轴角速度符号 Signs for wz term
+  };
+
+  /**
+   * @brief  默认构造函数
+   *         Default constructor
+   */
   Kinematics();
 
+  /**
+   * @brief  使用给定几何参数构造逆运动学对象
+   *         Constructs kinematics with explicit geometry
+   * @param  geometry 底盘几何参数 Chassis geometry parameters
+   */
   explicit Kinematics(const Geometry& geometry);
 
+  /**
+   * @brief  更新几何参数
+   *         Updates geometry parameters
+   * @param  geometry 底盘几何参数 Chassis geometry parameters
+   */
   void SetGeometry(const Geometry& geometry);
 
-  // Input twist is interpreted in base_link: +x forward, +y left, +z yaw CCW.
-  // Output wheel order is fixed as front_left, front_right, rear_left, rear_right.
+  /**
+   * @brief  更新轮向符号矩阵
+   *         Updates wheel direction sign matrix
+   * @param  direction_signs 三轴符号矩阵 Per-axis sign matrix
+   */
+  void SetDirectionSigns(const DirectionSigns& direction_signs);
+
+  /**
+   * @brief  根据底盘速度指令计算四轮目标角速度
+   *         Computes wheel target angular velocity from chassis velocity command
+   * @param  vx x 轴线速度（`base_link`，前进为正）
+   *            x-axis linear velocity in `base_link` (forward is positive)
+   * @param  vy y 轴线速度（`base_link`，左向为正）
+   *            y-axis linear velocity in `base_link` (left is positive)
+   * @param  wz z 轴角速度（`base_link`，逆时针为正）
+   *            z-axis angular velocity in `base_link` (CCW is positive)
+   * @return 四轮目标角速度（轮序固定）
+   *         Wheel target angular velocities in fixed wheel order
+   */
   WheelTargets ComputeWheelAngularVelocity(double vx, double vy, double wz) const;
 
  private:
-  Geometry geometry_;
+  Geometry geometry_;  ///< 几何参数缓存 Cached geometry
+  DirectionSigns direction_signs_;  ///< 轮向符号矩阵缓存 Cached direction sign matrix
 };
 
 }  // namespace sentry_chassis_controller

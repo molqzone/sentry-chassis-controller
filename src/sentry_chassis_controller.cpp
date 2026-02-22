@@ -13,7 +13,11 @@ namespace sentry_chassis_controller
 {
 namespace
 {
+// 运行时最小轮半径保护值，避免除零。
+// Runtime lower bound for wheel radius to avoid division by zero.
 constexpr double kMinWheelRadius = 1e-9;
+// 轮序后缀固定为前左、前右、后左、后右，需与配置文件和运动学保持一致。
+// Wheel order suffix must stay aligned with config and kinematics.
 const std::array<std::string, SentryChassisController::WHEEL_COUNT> kWheelNameSuffix = {
     "front_left", "front_right", "rear_left", "rear_right"};
 }  // namespace
@@ -67,6 +71,13 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
     geometry.wheel_radius = kMinWheelRadius;
   }
   kinematics_.SetGeometry(geometry);
+
+  Kinematics::DirectionSigns direction_signs;
+  if (!LoadDirectionSigns(nh, &direction_signs))
+  {
+    return false;
+  }
+  kinematics_.SetDirectionSigns(direction_signs);
 
   nh.param("cmd_vel_topic", cmd_vel_topic_, std::string("/cmd_vel"));
   nh.param("command_frame_id", command_frame_id_, std::string("base_link"));
@@ -130,6 +141,13 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
       "command_frame_id='%s', "
       "timeout=%.3fs.",
       cmd_vel_topic_.c_str(), command_frame_id_.c_str(), cmd_vel_timeout_);
+  ROS_INFO(
+      "wheel_direction_signs loaded: vx=[%d,%d,%d,%d], vy=[%d,%d,%d,%d], "
+      "wz=[%d,%d,%d,%d].",
+      direction_signs.vx[0], direction_signs.vx[1], direction_signs.vx[2],
+      direction_signs.vx[3], direction_signs.vy[0], direction_signs.vy[1],
+      direction_signs.vy[2], direction_signs.vy[3], direction_signs.wz[0],
+      direction_signs.wz[1], direction_signs.wz[2], direction_signs.wz[3]);
   return true;
 }
 
@@ -192,6 +210,8 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
 
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
   {
+    // 舵向按位置误差闭环，目标值来自 steer_zero_offsets_。
+    // Steering loop closes on position error using steer_zero_offsets_ as target.
     const double steer_error = steer_zero_offsets_[i] - steer_joints_[i].getPosition();
     const double steer_effort = steer_pids_[i].computeCommand(steer_error, period);
     steer_joints_[i].setCommand(steer_effort);
@@ -199,6 +219,8 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
 
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
   {
+    // 轮速按速度误差闭环，目标值由逆运动学解算得到。
+    // Wheel loop closes on velocity error using IK-computed targets.
     const double wheel_error = wheel_target_values[i] - wheel_joints_[i].getVelocity();
     const double wheel_effort = wheel_pids_[i].computeCommand(wheel_error, period);
     wheel_joints_[i].setCommand(wheel_effort);
@@ -241,6 +263,8 @@ bool SentryChassisController::InitPidGroup(
     ros::NodeHandle pid_nh(nh, ns);
     if (enable_dynamic_reconfigure_)
     {
+      // 动态调参模式：由 control_toolbox 自动挂载 dynamic_reconfigure 服务。
+      // Dynamic mode: control_toolbox internally provides dynamic_reconfigure services.
       if (!pid_array->at(i).init(pid_nh, false))
       {
         ROS_ERROR("Failed to initialize PID at namespace '%s'.",
@@ -250,6 +274,8 @@ bool SentryChassisController::InitPidGroup(
     }
     else
     {
+      // 固定参数模式：直接读取静态 YAML 参数，不注册动态调参接口。
+      // Fixed mode: read static YAML parameters without dynamic reconfigure endpoint.
       double p = 0.0;
       double i_gain = 0.0;
       double d = 0.0;
@@ -268,6 +294,72 @@ bool SentryChassisController::InitPidGroup(
       pid_nh.param("antiwindup", antiwindup, false);
       pid_array->at(i).initPid(p, i_gain, d, i_clamp_max, i_clamp_min, antiwindup);
     }
+  }
+  return true;
+}
+
+bool SentryChassisController::LoadDirectionSigns(
+    ros::NodeHandle& nh, Kinematics::DirectionSigns* direction_signs)
+{
+  std::vector<int> vx_values;
+  std::vector<int> vy_values;
+  std::vector<int> wz_values;
+  const bool has_vx = nh.getParam("wheel_direction_signs/vx", vx_values);
+  const bool has_vy = nh.getParam("wheel_direction_signs/vy", vy_values);
+  const bool has_wz = nh.getParam("wheel_direction_signs/wz", wz_values);
+
+  if (!has_vx && !has_vy && !has_wz)
+  {
+    // 三轴都未配置时使用全 1 默认值，保持历史行为。
+    // Keep legacy behavior when all three axes are omitted.
+    *direction_signs = Kinematics::DirectionSigns();
+    return true;
+  }
+  if (!(has_vx && has_vy && has_wz))
+  {
+    ROS_ERROR(
+        "Parameters 'wheel_direction_signs/vx', 'wheel_direction_signs/vy' and "
+        "'wheel_direction_signs/wz' must all be set when any one is provided.");
+    return false;
+  }
+
+  if (!ParseDirectionAxis(vx_values, "wheel_direction_signs/vx", &direction_signs->vx))
+  {
+    return false;
+  }
+  if (!ParseDirectionAxis(vy_values, "wheel_direction_signs/vy", &direction_signs->vy))
+  {
+    return false;
+  }
+  if (!ParseDirectionAxis(wz_values, "wheel_direction_signs/wz", &direction_signs->wz))
+  {
+    return false;
+  }
+  return true;
+}
+
+bool SentryChassisController::ParseDirectionAxis(const std::vector<int>& axis_values,
+                                                 const std::string& param_name,
+                                                 std::array<int, WHEEL_COUNT>* output)
+{
+  // 参数必须完整覆盖四个轮子，且每项仅允许 {-1, 1}。
+  // Each axis must provide exactly four entries and each value must be {-1, 1}.
+  if (axis_values.size() != WHEEL_COUNT)
+  {
+    ROS_ERROR("Parameter '%s' must contain exactly %zu items.", param_name.c_str(),
+              WHEEL_COUNT);
+    return false;
+  }
+
+  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+  {
+    if (axis_values[i] != -1 && axis_values[i] != 1)
+    {
+      ROS_ERROR("Parameter '%s[%zu]' must be -1 or 1, got %d.", param_name.c_str(), i,
+                axis_values[i]);
+      return false;
+    }
+    output->at(i) = axis_values[i];
   }
   return true;
 }

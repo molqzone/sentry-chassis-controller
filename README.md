@@ -5,9 +5,12 @@
 ## 模板对齐内容
 
 - 目录结构：`include/`、`src/`、`config/`、`launch/`、`test/`、`doc/`。
-- 构建结构：核心算法库（`kinematics`）+ 节点入口（`sentry_chassis_controller_node`）+ gtest。
-- 参数加载：默认参数（`config/default.yaml`）+ 覆盖参数启动文件。
-- 节点文件命名：节点逻辑在 `src/sentry_chassis_controller_node.cpp`，启动入口在 `src/sentry_chassis_controller_node_main.cpp`，对应头文件 `include/sentry_chassis_controller/sentry_chassis_controller_node.hpp`。
+- 构建结构：核心算法库（`kinematics`）+ plugin 控制器（`SentryChassisController`）+ gtest。
+- 参数加载：统一通过 `config/chassis_controller.yaml` 由 plugin 链路读取。
+
+## 运行链路
+
+- 主链路仅保留 plugin：`roslaunch sentry_chassis_controller sentry_chassis_controller.launch`
 
 ## 项目特有内容
 
@@ -27,6 +30,8 @@
 - `enable_dynamic_reconfigure`：是否启用 `rqt_reconfigure` 在线调参（默认 `true`）
 - `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
 - `steer_zero_offsets`：四个舵向零位目标（rad）
+- `wheel_direction_signs/vx`、`wheel_direction_signs/vy`、`wheel_direction_signs/wz`：
+  轮向符号矩阵，轮序固定 `front_left, front_right, rear_left, rear_right`，每项只能为 `-1` 或 `1`
 - 八路 PID（每路独立）：
   - `pid/steer/front_left/*`
   - `pid/steer/front_right/*`
@@ -51,12 +56,24 @@
    - `angular.z`：绕 z 轴逆时针为正
 2. 轮序固定为：`front_left`、`front_right`、`rear_left`、`rear_right`。
 3. 逆运动学公式：
-   - `fl = (vx - vy - ((wheel_base + track_width) / 2) * wz) / wheel_radius`
-   - `fr = (vx + vy + ((wheel_base + track_width) / 2) * wz) / wheel_radius`
-   - `rl = (vx + vy - ((wheel_base + track_width) / 2) * wz) / wheel_radius`
-   - `rr = (vx - vy + ((wheel_base + track_width) / 2) * wz) / wheel_radius`
+   - `fl = (sx_fl*vx - sy_fl*vy - sz_fl*((wheel_base + track_width) / 2)*wz) / wheel_radius`
+   - `fr = (sx_fr*vx + sy_fr*vy + sz_fr*((wheel_base + track_width) / 2)*wz) / wheel_radius`
+   - `rl = (sx_rl*vx + sy_rl*vy - sz_rl*((wheel_base + track_width) / 2)*wz) / wheel_radius`
+   - `rr = (sx_rr*vx - sy_rr*vy + sz_rr*((wheel_base + track_width) / 2)*wz) / wheel_radius`
 4. 几何参数 `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
    可直接在 `config/chassis_controller.yaml` 中配置并实时影响目标轮速解算。
+
+## 轮向符号矩阵（wheel_direction_signs）
+
+用于对齐仿真模型中每个轮子的实际正方向，避免“公式符号正确但关节方向相反”导致的验收误判。
+
+- 默认行为：三个轴参数都缺失时，按全 `1` 处理，不改变原始逆解公式。
+- 配置规则：只要配置了任意一个轴，`vx/vy/wz` 三组必须同时存在且每组长度为 4。
+- 当前模型推荐值：
+  - `vx: [1, -1, -1, -1]`
+  - `vy: [-1, -1, -1, 1]`
+  - `wz: [1, 1, 1, -1]`
+- 调参方法：保持轮序不变，针对单轴输入（仅 `vx`、仅 `vy`、仅 `wz`）逐项调整到符号一致。
 
 ## 在线调参与观测
 
