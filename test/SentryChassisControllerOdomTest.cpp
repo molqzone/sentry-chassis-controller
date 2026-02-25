@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
+#include <tf2/LinearMath/Quaternion.h>
 
 #include <cmath>
 #include <string>
-#include <tf2/LinearMath/Quaternion.h>
 
 #include "sentry_chassis_controller/sentry_chassis_controller.h"
 
@@ -32,7 +32,7 @@ geometry_msgs::TransformStamped build_transform(const std::string& target_frame,
   transform.transform.rotation.w = quaternion.w();
   return transform;
 }
-}
+}  // namespace
 
 TEST(SentryChassisControllerOdom, IntegratesStraightMotion)
 {
@@ -73,7 +73,8 @@ TEST(SentryChassisControllerOdom, TransformTwistWithTransformRotatesGlobalToBase
   const auto TRANSFORM = build_transform("base_link", "odom", -K_PI * 0.5);
 
   Kinematics::ChassisTwist output;
-  ASSERT_TRUE(SentryChassisController::TransformTwistWithTransform(INPUT, TRANSFORM, &output));
+  ASSERT_TRUE(
+      SentryChassisController::TransformTwistWithTransform(INPUT, TRANSFORM, &output));
   EXPECT_NEAR(0.0, output.vx, 1e-9);
   EXPECT_NEAR(-1.0, output.vy, 1e-9);
   EXPECT_NEAR(0.6, output.wz, 1e-9);

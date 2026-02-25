@@ -1,0 +1,77 @@
+<launch>
+  <arg name="paused" default="false"/>
+  <arg name="gui" default="true"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="load_chassis" default="true"/>
+  <arg name="roller_type" default="realistic" doc="simple or realistic"/>
+  <arg name="spawn_z" default="0.5"/>
+  <arg name="with_joint_state_controller" default="true"/>
+  <arg name="joint_state_publish_rate" default="50.0"/>
+  <arg name="with_robot_state_publisher" default="true"/>
+  <arg name="with_foxglove" default="true"/>
+  <arg name="foxglove_backend" default="foxglove_bridge" doc="foxglove_bridge or rosbridge"/>
+  <arg name="foxglove_bridge_port" default="8765"/>
+  <arg name="foxglove_bridge_address" default="0.0.0.0"/>
+  <arg name="foxglove_port" default="9090"/>
+  <arg name="with_foxglove_mesh_server" default="true"/>
+  <arg name="foxglove_mesh_bind" default="0.0.0.0"/>
+  <arg name="foxglove_mesh_port" default="8766"/>
+  <arg name="foxglove_mesh_uri_prefix" default="http://127.0.0.1:8766"/>
+
+  <param name="robot_description_gazebo" command="$(find xacro)/xacro $(find sentry_chassis_controller)/urdf/sentry_overlay.urdf.xacro
+         load_chassis:=$(arg load_chassis)
+         use_simulation:=true roller_type:=$(arg roller_type)
+"/>
+
+  <param name="robot_description" command="$(find xacro)/xacro $(find sentry_chassis_controller)/urdf/sentry_overlay.urdf.xacro
+         load_chassis:=$(arg load_chassis)
+         use_simulation:=true roller_type:=$(arg roller_type)
+"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+  </include>
+
+  <node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model" clear_params="true"
+        args="-z $(arg spawn_z) -param robot_description_gazebo -urdf -model sentry"
+        output="screen"/>
+
+  <include file="$(find sentry_chassis_controller)/launch/sentry_chassis_controller.launch"/>
+
+  <group if="$(arg with_joint_state_controller)">
+    <param name="/joint_state_controller/type" value="joint_state_controller/JointStateController"/>
+    <param name="/joint_state_controller/publish_rate" type="double" value="$(arg joint_state_publish_rate)"/>
+    <node name="joint_state_spawner" pkg="controller_manager" type="spawner"
+          args="joint_state_controller" output="screen"/>
+  </group>
+
+  <node if="$(arg with_robot_state_publisher)"
+        name="robot_state_publisher"
+        pkg="robot_state_publisher"
+        type="robot_state_publisher"
+        output="screen"/>
+
+  <group if="$(arg with_foxglove)">
+    <param if="$(eval arg('foxglove_backend') == 'rosbridge' and arg('with_foxglove_mesh_server') == 'true')"
+           name="robot_description"
+           command="bash -lc '$(find xacro)/xacro $(find sentry_chassis_controller)/urdf/sentry_overlay.urdf.xacro load_chassis:=$(arg load_chassis) use_simulation:=true roller_type:=$(arg roller_type) | sed &quot;s|package://rm_description|$(arg foxglove_mesh_uri_prefix)|g&quot;'"/>
+
+    <node if="$(eval arg('foxglove_backend') == 'rosbridge' and arg('with_foxglove_mesh_server') == 'true')"
+          name="foxglove_mesh_server"
+          pkg="sentry_chassis_controller"
+          type="serve_rm_description_meshes.py"
+          args="--host $(arg foxglove_mesh_bind) --port $(arg foxglove_mesh_port)"
+          output="screen"/>
+
+    <include if="$(eval arg('foxglove_backend') == 'rosbridge')" file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
+      <arg name="port" value="$(arg foxglove_port)"/>
+    </include>
+
+    <include if="$(eval arg('foxglove_backend') == 'foxglove_bridge')" file="$(find foxglove_bridge)/ros1_foxglove_bridge/launch/foxglove_bridge.launch">
+      <arg name="address" value="$(arg foxglove_bridge_address)"/>
+      <arg name="port" value="$(arg foxglove_bridge_port)"/>
+    </include>
+  </group>
+</launch>

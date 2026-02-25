@@ -210,8 +210,8 @@ TEST(Kinematics, ForwardKinematicsHonorsRollingSigns)
   const std::array<int, 4> WRONG_SIGNS{{1, 1, 1, 1}};
 
   Kinematics kinematics(geometry);
-  const auto FEEDBACK = build_feedback_from_twist(geometry, EXPECTED_TWIST, STEER_POSITIONS,
-                                                  STEER_ZERO_OFFSETS, CORRECT_SIGNS);
+  const auto FEEDBACK = build_feedback_from_twist(
+      geometry, EXPECTED_TWIST, STEER_POSITIONS, STEER_ZERO_OFFSETS, CORRECT_SIGNS);
 
   Kinematics::ChassisTwist solved_correct;
   ASSERT_TRUE(kinematics.ComputeChassisTwistFromWheelFeedback(

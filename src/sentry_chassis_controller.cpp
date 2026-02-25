@@ -10,8 +10,10 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace sentry_chassis_controller
@@ -23,6 +25,10 @@ namespace
 constexpr double MIN_WHEEL_RADIUS = 1e-9;
 constexpr double MIN_VALID_DT = 1e-9;
 constexpr double TF_LOOKUP_TIMEOUT_SEC = 0.02;
+constexpr double ZERO_CMD_EPS = 1e-4;
+constexpr double GLOBAL_ALIGNMENT_GATE = 0.20;
+constexpr double PI = 3.14159265358979323846;
+constexpr double HALF_PI = PI * 0.5;
 // 轮序后缀固定为前左、前右、后左、后右，需与配置文件和运动学保持一致。
 // Wheel order suffix must stay aligned with config and kinematics.
 const std::array<std::string, SentryChassisController::WHEEL_COUNT> WHEEL_NAME_SUFFIX = {
@@ -77,6 +83,7 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
              MIN_WHEEL_RADIUS);
     geometry.wheel_radius = MIN_WHEEL_RADIUS;
   }
+  geometry_ = geometry;
   kinematics_.SetGeometry(geometry);
 
   Kinematics::DirectionSigns direction_signs;
@@ -84,6 +91,7 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   {
     return false;
   }
+  direction_signs_ = direction_signs;
   kinematics_.SetDirectionSigns(direction_signs);
   if (!LoadRollingSigns(nh, &wheel_rolling_signs_))
   {
@@ -105,6 +113,27 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   nh.param("odom_max_angular_speed", odom_max_angular_speed_, 16.0);
   nh.param("odom_integrate_on_timeout", odom_integrate_on_timeout_, false);
   nh.param("publish_tf", publish_tf_, true);
+  nh.param("wheel_effort_limit", wheel_effort_limit_, 12.0);
+  nh.param("opposite_sign_yaw_gain", opposite_sign_yaw_gain_, 1.0);
+  nh.param("opposite_sign_lateral_bias", opposite_sign_lateral_bias_, 0.0);
+  nh.param("zero_command_steer_gain", zero_command_steer_gain_, 1.0);
+  nh.param("pure_strafe_bias", pure_strafe_bias_, 0.0);
+  nh.param("pure_strafe_positive_vx_bias", pure_strafe_positive_vx_bias_, 0.0);
+  nh.param("pure_reverse_vx_gain", pure_reverse_vx_gain_, 1.0);
+  nh.param("pure_reverse_lateral_bias", pure_reverse_lateral_bias_, 0.0);
+  std::vector<double> command_comp_matrix_values;
+  if (nh.getParam("command_compensation_matrix", command_comp_matrix_values))
+  {
+    if (command_comp_matrix_values.size() != 9U)
+    {
+      ROS_ERROR("Parameter 'command_compensation_matrix' must contain exactly 9 items.");
+      return false;
+    }
+    for (std::size_t i = 0; i < 9U; ++i)
+    {
+      command_compensation_matrix_[i] = command_comp_matrix_values[i];
+    }
+  }
   if (!ParseCommandVelocityMode(command_velocity_mode_text, &command_velocity_mode_))
   {
     ROS_ERROR(
@@ -149,6 +178,52 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
     ROS_WARN("Parameter 'odom_max_angular_speed' must be positive. Clamping to 16.0.");
     odom_max_angular_speed_ = 16.0;
   }
+  if (wheel_effort_limit_ <= 0.0)
+  {
+    ROS_WARN("Parameter 'wheel_effort_limit' must be positive. Clamping to 12.0.");
+    wheel_effort_limit_ = 12.0;
+  }
+  if (opposite_sign_yaw_gain_ < 1.0)
+  {
+    ROS_WARN(
+        "Parameter 'opposite_sign_yaw_gain' must be >= 1.0. Clamping to 1.0.");
+    opposite_sign_yaw_gain_ = 1.0;
+  }
+  if (opposite_sign_lateral_bias_ < 0.0)
+  {
+    ROS_WARN(
+        "Parameter 'opposite_sign_lateral_bias' must be >= 0.0. Clamping to 0.0.");
+    opposite_sign_lateral_bias_ = 0.0;
+  }
+  if (zero_command_steer_gain_ < 1.0)
+  {
+    ROS_WARN(
+        "Parameter 'zero_command_steer_gain' must be >= 1.0. Clamping to 1.0.");
+    zero_command_steer_gain_ = 1.0;
+  }
+  if (pure_strafe_bias_ < 0.0)
+  {
+    ROS_WARN("Parameter 'pure_strafe_bias' must be >= 0.0. Clamping to 0.0.");
+    pure_strafe_bias_ = 0.0;
+  }
+  if (pure_strafe_positive_vx_bias_ < 0.0)
+  {
+    ROS_WARN(
+        "Parameter 'pure_strafe_positive_vx_bias' must be >= 0.0. Clamping to 0.0.");
+    pure_strafe_positive_vx_bias_ = 0.0;
+  }
+  if (pure_reverse_vx_gain_ < 1.0)
+  {
+    ROS_WARN(
+        "Parameter 'pure_reverse_vx_gain' must be >= 1.0. Clamping to 1.0.");
+    pure_reverse_vx_gain_ = 1.0;
+  }
+  if (pure_reverse_lateral_bias_ < 0.0)
+  {
+    ROS_WARN(
+        "Parameter 'pure_reverse_lateral_bias' must be >= 0.0. Clamping to 0.0.");
+    pure_reverse_lateral_bias_ = 0.0;
+  }
 
   steer_joints_.clear();
   wheel_joints_.clear();
@@ -187,6 +262,7 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   command_buffer_.writeFromNonRT(command);
   odom_state_ = OdomState();
   controller_start_time_ = ros::Time(0);
+  last_command_timed_out_ = true;
 
   cmd_vel_subscriber_ =
       nh.subscribe(cmd_vel_topic_, 1, &SentryChassisController::CmdVelCallback, this);
@@ -228,6 +304,18 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
       "max_angular=%.3frad/s, integrate_on_timeout=%s.",
       odom_startup_hold_sec_, odom_max_linear_speed_, odom_max_angular_speed_,
       odom_integrate_on_timeout_ ? "true" : "false");
+  ROS_INFO("wheel effort command limit configured as %.3f.", wheel_effort_limit_);
+  ROS_INFO("opposite-sign yaw gain configured as %.3f.", opposite_sign_yaw_gain_);
+  ROS_INFO("opposite-sign lateral bias configured as %.3f.",
+           opposite_sign_lateral_bias_);
+  ROS_INFO("zero-command steer gain configured as %.3f.",
+           zero_command_steer_gain_);
+  ROS_INFO("pure strafe bias configured as %.3f.", pure_strafe_bias_);
+  ROS_INFO("pure strafe positive-vx bias configured as %.3f.",
+           pure_strafe_positive_vx_bias_);
+  ROS_INFO("pure reverse vx gain configured as %.3f.", pure_reverse_vx_gain_);
+  ROS_INFO("pure reverse lateral bias configured as %.3f.",
+           pure_reverse_lateral_bias_);
   ROS_INFO(
       "wheel_direction_signs loaded: vx=[%d,%d,%d,%d], vy=[%d,%d,%d,%d], "
       "wz=[%d,%d,%d,%d].",
@@ -404,6 +492,7 @@ void SentryChassisController::starting(const ros::Time& time)
   command_buffer_.writeFromNonRT(command);
   odom_state_ = OdomState();
   controller_start_time_ = time;
+  last_command_timed_out_ = true;
 }
 
 void SentryChassisController::update(const ros::Time& time, const ros::Duration& period)
@@ -418,11 +507,19 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   CommandData command = *command_buffer_.readFromRT();
   const bool TIMEOUT =
       IsCommandTimedOut(command.valid, command.stamp, time, cmd_vel_timeout_);
+  if (TIMEOUT && !last_command_timed_out_)
+  {
+    for (auto& pid : wheel_pids_)
+    {
+      pid.reset();
+    }
+  }
+  last_command_timed_out_ = TIMEOUT;
 
   // Resolve cmd_vel into base frame before IK:
   // - base_link mode: direct use
   // - global mode: transform command_frame -> base_frame via TF.
-  Kinematics::ChassisTwist command_twist_base;
+  Kinematics::ChassisTwist command_twist_base{};
   if (!TIMEOUT)
   {
     const bool COMMAND_RESOLVED =
@@ -433,31 +530,157 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     }
   }
 
-  const double VX = command_twist_base.vx;
-  const double VY = command_twist_base.vy;
-  const double WZ = command_twist_base.wz;
-  const Kinematics::WheelTargets WHEEL_TARGETS =
-      kinematics_.ComputeWheelAngularVelocity(VX, VY, WZ);
-  const std::array<double, WHEEL_COUNT> WHEEL_TARGET_VALUES = {
-      WHEEL_TARGETS.front_left, WHEEL_TARGETS.front_right, WHEEL_TARGETS.rear_left,
-      WHEEL_TARGETS.rear_right};
+  const double RAW_VX = command_twist_base.vx;
+  const double RAW_VY = command_twist_base.vy;
+  const double RAW_WZ = command_twist_base.wz;
+  const double VX = command_compensation_matrix_[0] * RAW_VX +
+                    command_compensation_matrix_[1] * RAW_VY +
+                    command_compensation_matrix_[2] * RAW_WZ;
+  const double VY = command_compensation_matrix_[3] * RAW_VX +
+                    command_compensation_matrix_[4] * RAW_VY +
+                    command_compensation_matrix_[5] * RAW_WZ;
+  const double WZ = command_compensation_matrix_[6] * RAW_VX +
+                    command_compensation_matrix_[7] * RAW_VY +
+                    command_compensation_matrix_[8] * RAW_WZ;
+  double vx_for_ik = VX;
+  double vy_for_ik = VY;
+  double wz_for_ik = WZ;
+  const bool OPPOSITE_SIGN_CURVATURE =
+      std::fabs(VX) > ZERO_CMD_EPS && std::fabs(WZ) > ZERO_CMD_EPS && VX * WZ < 0.0;
+  if (OPPOSITE_SIGN_CURVATURE)
+  {
+    wz_for_ik *= opposite_sign_yaw_gain_;
+    vy_for_ik -= opposite_sign_lateral_bias_ * std::fabs(WZ);
+  }
+  const bool PURE_STRAFE_COMMAND =
+      std::fabs(VX) <= ZERO_CMD_EPS && std::fabs(WZ) <= ZERO_CMD_EPS &&
+      std::fabs(VY) > ZERO_CMD_EPS;
+  if (PURE_STRAFE_COMMAND)
+  {
+    if (VY > ZERO_CMD_EPS)
+    {
+      vy_for_ik += pure_strafe_bias_;
+      vx_for_ik -= pure_strafe_positive_vx_bias_;
+    }
+    else
+    {
+      vy_for_ik -= pure_strafe_bias_;
+    }
+  }
+  const bool PURE_REVERSE_COMMAND =
+      VX < -ZERO_CMD_EPS && std::fabs(VY) <= ZERO_CMD_EPS &&
+      std::fabs(WZ) <= ZERO_CMD_EPS;
+  if (PURE_REVERSE_COMMAND)
+  {
+    vx_for_ik *= pure_reverse_vx_gain_;
+    vy_for_ik -= pure_reverse_lateral_bias_;
+  }
+  const bool ZERO_CMD_REQUESTED =
+      std::fabs(VX) < ZERO_CMD_EPS && std::fabs(VY) < ZERO_CMD_EPS &&
+      std::fabs(WZ) < ZERO_CMD_EPS;
+  const double HALF_WHEEL_BASE = geometry_.wheel_base * 0.5;
+  const double HALF_TRACK_WIDTH = geometry_.track_width * 0.5;
+  const double WHEEL_RADIUS =
+      geometry_.wheel_radius > MIN_WHEEL_RADIUS ? geometry_.wheel_radius : MIN_WHEEL_RADIUS;
+  const std::array<std::pair<double, double>, WHEEL_COUNT> MODULE_POSITIONS = {{
+      {HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
+      {HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
+      {-HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
+      {-HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
+  }};
+  std::array<double, WHEEL_COUNT> STEER_ERRORS{};
+  std::array<double, WHEEL_COUNT> WHEEL_TARGET_VALUES{};
+  std::array<double, WHEEL_COUNT> ALIGNMENTS{};
 
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
   {
-    // 舵向按位置误差闭环，目标值来自 steer_zero_offsets_。
-    // Steering loop closes on position error using steer_zero_offsets_ as target.
-    const double STEER_ERROR = steer_zero_offsets_[i] - steer_joints_[i].getPosition();
-    const double STEER_EFFORT = steer_pids_[i].computeCommand(STEER_ERROR, period);
+    double steer_error =
+        NormalizeAngle(steer_zero_offsets_[i] - steer_joints_[i].getPosition());
+    double wheel_target = 0.0;
+    double alignment = 1.0;
+    if (!ZERO_CMD_REQUESTED)
+    {
+      // Swerve IK: project chassis twist to each module velocity, then convert
+      // to target steering angle and wheel speed.
+      const double MODULE_X = MODULE_POSITIONS[i].first;
+      const double MODULE_Y = MODULE_POSITIONS[i].second;
+      const double SIGNED_VX = static_cast<double>(direction_signs_.vx[i]) * vx_for_ik;
+      const double SIGNED_VY = static_cast<double>(direction_signs_.vy[i]) * vy_for_ik;
+      const double SIGNED_WZ = static_cast<double>(direction_signs_.wz[i]) * wz_for_ik;
+      const double MODULE_VX = SIGNED_VX - SIGNED_WZ * MODULE_Y;
+      const double MODULE_VY = SIGNED_VY + SIGNED_WZ * MODULE_X;
+      const double MODULE_SPEED = std::hypot(MODULE_VX, MODULE_VY);
+      if (MODULE_SPEED > ZERO_CMD_EPS)
+      {
+        const double TARGET_STEER =
+            std::atan2(MODULE_VY, MODULE_VX) + steer_zero_offsets_[i];
+        steer_error = NormalizeAngle(TARGET_STEER - steer_joints_[i].getPosition());
+        wheel_target = MODULE_SPEED / WHEEL_RADIUS;
+
+        // Flip wheel direction if turning more than 90deg to reach target.
+        if (steer_error > HALF_PI)
+        {
+          steer_error -= PI;
+          wheel_target = -wheel_target;
+        }
+        else if (steer_error < -HALF_PI)
+        {
+          steer_error += PI;
+          wheel_target = -wheel_target;
+        }
+
+        // Reduce wheel speed while steering is not aligned to avoid transient spin.
+        alignment = std::max(0.0, std::cos(steer_error));
+        wheel_target *= alignment;
+      }
+    }
+    if (ZERO_CMD_REQUESTED)
+    {
+      steer_error *= zero_command_steer_gain_;
+    }
+    STEER_ERRORS[i] = steer_error;
+    WHEEL_TARGET_VALUES[i] = wheel_target;
+    ALIGNMENTS[i] = alignment;
+
+    // 舵向按位置误差闭环，目标值按每轮目标舵角实时计算。
+    // Steering loop closes on per-wheel target steering angle error.
+    const double STEER_EFFORT = steer_pids_[i].computeCommand(STEER_ERRORS[i], period);
     steer_joints_[i].setCommand(STEER_EFFORT);
   }
 
-  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+  if (ZERO_CMD_REQUESTED)
   {
-    // 轮速按速度误差闭环，目标值由逆运动学解算得到。
-    // Wheel loop closes on velocity error using IK-computed targets.
-    const double WHEEL_ERROR = WHEEL_TARGET_VALUES[i] - wheel_joints_[i].getVelocity();
-    const double WHEEL_EFFORT = wheel_pids_[i].computeCommand(WHEEL_ERROR, period);
-    wheel_joints_[i].setCommand(WHEEL_EFFORT);
+    for (auto& pid : wheel_pids_)
+    {
+      pid.reset();
+    }
+    SetAllCommands(&wheel_joints_, 0.0);
+  }
+  else
+  {
+    double global_alignment = 1.0;
+    for (const double alignment : ALIGNMENTS)
+    {
+      global_alignment = std::min(global_alignment, alignment);
+    }
+    if (global_alignment < GLOBAL_ALIGNMENT_GATE)
+    {
+      global_alignment = 0.0;
+    }
+
+    for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+    {
+      // 轮速按速度误差闭环，目标值由逆运动学解算得到。
+      // Wheel loop closes on velocity error using IK-computed targets.
+      const double ROLLING_SIGN = static_cast<double>(wheel_rolling_signs_[i]);
+      const double SIGNED_WHEEL_VELOCITY = ROLLING_SIGN * wheel_joints_[i].getVelocity();
+      const double WHEEL_TARGET = WHEEL_TARGET_VALUES[i] * global_alignment;
+      const double WHEEL_ERROR = WHEEL_TARGET - SIGNED_WHEEL_VELOCITY;
+      const double SIGNED_WHEEL_EFFORT = wheel_pids_[i].computeCommand(WHEEL_ERROR, period);
+      const double LIMITED_SIGNED_WHEEL_EFFORT =
+          std::max(-wheel_effort_limit_, std::min(wheel_effort_limit_, SIGNED_WHEEL_EFFORT));
+      wheel_joints_[i].setCommand(ROLLING_SIGN * LIMITED_SIGNED_WHEEL_EFFORT);
+    }
   }
 
   Kinematics::WheelFeedback feedback;
@@ -533,6 +756,7 @@ void SentryChassisController::stopping(const ros::Time& time)
   }
   odom_state_ = OdomState();
   controller_start_time_ = ros::Time(0);
+  last_command_timed_out_ = true;
 }
 
 void SentryChassisController::CmdVelCallback(const geometry_msgs::TwistConstPtr& message)

@@ -37,8 +37,8 @@ class Kinematics
    */
   struct Geometry
   {
-    double wheel_base = 0.50;    ///< 前后轴距（米） Front-rear wheelbase in meters
-    double track_width = 0.40;   ///< 左右轮距（米） Left-right track width in meters
+    double wheel_base = 0.50;     ///< 前后轴距（米） Front-rear wheelbase in meters
+    double track_width = 0.40;    ///< 左右轮距（米） Left-right track width in meters
     double wheel_radius = 0.076;  ///< 轮半径（米） Wheel radius in meters
   };
 
@@ -71,8 +71,8 @@ class Kinematics
    */
   struct WheelFeedback
   {
-    std::array<double, 4>
-        steer_position{{0.0, 0.0, 0.0, 0.0}};  ///< 舵角反馈 Steering angle feedback
+    std::array<double, 4> steer_position{
+        {0.0, 0.0, 0.0, 0.0}};  ///< 舵角反馈 Steering angle feedback
     std::array<double, 4> wheel_angular_velocity{
         {0.0, 0.0, 0.0, 0.0}};  ///< 轮速反馈 Wheel angular velocity feedback
   };
@@ -146,12 +146,11 @@ class Kinematics
    *         Returns `true` on success; `false` if singular/invalid
    */
   bool ComputeChassisTwistFromWheelFeedback(
-      const WheelFeedback& feedback,
-      const std::array<double, 4>& steer_zero_offsets,
+      const WheelFeedback& feedback, const std::array<double, 4>& steer_zero_offsets,
       const std::array<int, 4>& wheel_rolling_signs, ChassisTwist* twist) const;
 
  private:
-  Geometry geometry_;  ///< 几何参数缓存 Cached geometry
+  Geometry geometry_;               ///< 几何参数缓存 Cached geometry
   DirectionSigns direction_signs_;  ///< 轮向符号矩阵缓存 Cached direction sign matrix
 };
 

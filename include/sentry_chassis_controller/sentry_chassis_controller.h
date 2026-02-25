@@ -104,8 +104,8 @@ class SentryChassisController
    */
   enum class CommandVelocityMode
   {
-    BASE_LINK = 0,   ///< 直接按底盘坐标解释 / Interpret command as base frame
-    GLOBAL = 1,      ///< 按全局坐标解释并转换 / Interpret command as global frame
+    BASE_LINK = 0,  ///< 直接按底盘坐标解释 / Interpret command as base frame
+    GLOBAL = 1,     ///< 按全局坐标解释并转换 / Interpret command as global frame
   };
 
   /**
@@ -116,9 +116,9 @@ class SentryChassisController
    * @param  output 输出速度 Output twist
    * @return 转换是否成功 Transform success flag
    */
-  static bool TransformTwistWithTransform(const Kinematics::ChassisTwist& input,
-                                          const geometry_msgs::TransformStamped& transform,
-                                          Kinematics::ChassisTwist* output);
+  static bool TransformTwistWithTransform(
+      const Kinematics::ChassisTwist& input,
+      const geometry_msgs::TransformStamped& transform, Kinematics::ChassisTwist* output);
 
   /**
    * @brief  初始化控制器
@@ -158,10 +158,10 @@ class SentryChassisController
    */
   struct CommandData
   {
-    double vx = 0.0;   ///< x 向线速度（base_link） x-axis linear velocity in base_link
-    double vy = 0.0;   ///< y 向线速度（base_link） y-axis linear velocity in base_link
-    double wz = 0.0;   ///< z 向角速度（base_link） z-axis angular velocity in base_link
-    ros::Time stamp;   ///< 指令时间戳 Command timestamp
+    double vx = 0.0;     ///< x 向线速度（base_link） x-axis linear velocity in base_link
+    double vy = 0.0;     ///< y 向线速度（base_link） y-axis linear velocity in base_link
+    double wz = 0.0;     ///< z 向角速度（base_link） z-axis angular velocity in base_link
+    ros::Time stamp;     ///< 指令时间戳 Command timestamp
     bool valid = false;  ///< 指令有效标记 Command validity flag
   };
 
@@ -201,8 +201,7 @@ class SentryChassisController
    * @param  rolling_signs 符号输出 Output rolling signs
    * @return 读取是否成功 Load success flag
    */
-  bool LoadRollingSigns(ros::NodeHandle& nh,
-                        std::array<int, WHEEL_COUNT>* rolling_signs);
+  bool LoadRollingSigns(ros::NodeHandle& nh, std::array<int, WHEEL_COUNT>* rolling_signs);
 
   /**
    * @brief  解析并校验速度指令模式参数
@@ -273,11 +272,14 @@ class SentryChassisController
       wheel_pids_;  ///< 4 路轮速 PID 4 wheel PID loops
   std::array<double, WHEEL_COUNT>
       steer_zero_offsets_{};  ///< 舵向零位目标 Steering zero-position targets
-  std::array<int, WHEEL_COUNT>
-      wheel_rolling_signs_{{1, 1, 1, 1}};  ///< 轮速方向符号 Wheel rolling direction signs
-  Kinematics kinematics_;  ///< 逆运动学求解器 Inverse kinematics solver
+  Kinematics::DirectionSigns
+      direction_signs_{};  ///< 三轴符号矩阵缓存 Cached per-axis sign matrix
+  std::array<int, WHEEL_COUNT> wheel_rolling_signs_{
+      {1, 1, 1, 1}};                    ///< 轮速方向符号 Wheel rolling direction signs
+  Kinematics::Geometry geometry_{};     ///< 底盘几何参数缓存 Cached chassis geometry
+  Kinematics kinematics_;               ///< 逆运动学求解器 Inverse kinematics solver
   ros::Subscriber cmd_vel_subscriber_;  ///< 速度指令订阅器 Velocity command subscriber
-  ros::Publisher odom_publisher_;  ///< 里程计发布器 Odometry publisher
+  ros::Publisher odom_publisher_;       ///< 里程计发布器 Odometry publisher
   std::unique_ptr<tf2_ros::TransformBroadcaster>
       tf_broadcaster_;  ///< TF 广播器 TF broadcaster
   realtime_tools::RealtimeBuffer<CommandData>
@@ -287,8 +289,9 @@ class SentryChassisController
       CommandVelocityMode::BASE_LINK;  ///< 指令解析模式 Command interpretation mode
   std::string command_frame_id_ = "base_link";  ///< 指令坐标系 Command frame id
   double cmd_vel_timeout_ = 0.25;  ///< 指令超时阈值（秒） Command timeout in seconds
-  bool enable_dynamic_reconfigure_ = true;  ///< 是否启用动态调参 Enable dynamic reconfigure
-  std::string odom_topic_ = "/odom";  ///< 里程计话题 Odometry topic
+  bool enable_dynamic_reconfigure_ =
+      true;                             ///< 是否启用动态调参 Enable dynamic reconfigure
+  std::string odom_topic_ = "/odom";    ///< 里程计话题 Odometry topic
   std::string odom_frame_id_ = "odom";  ///< 里程计父坐标系 Odom frame id
   std::string base_frame_id_ = "base_link";  ///< 底盘坐标系 Base frame id
   double odom_startup_hold_sec_ =
@@ -300,11 +303,29 @@ class SentryChassisController
   bool odom_integrate_on_timeout_ =
       false;  ///< 指令超时时是否继续积分 Odom integration when cmd times out
   bool publish_tf_ = true;  ///< 是否发布 odom->base_link TF Whether to publish odom TF
-  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;  ///< TF 缓冲区 TF buffer
-  std::unique_ptr<tf2_ros::TransformListener>
-      tf_listener_;  ///< TF 监听器 TF listener
-  OdomState odom_state_;  ///< 累计里程计状态 Integrated odometry state
+  double wheel_effort_limit_ =
+      12.0;  ///< 轮速回路输出限幅（绝对值） Wheel effort command limit (absolute)
+  double opposite_sign_yaw_gain_ =
+      1.0;  ///< vx 与 wz 反号时的 yaw 增益 Opposite-sign vx/wz yaw gain
+  double opposite_sign_lateral_bias_ =
+      0.0;  ///< vx 与 wz 反号时的侧向补偿 Opposite-sign vx/wz lateral compensation
+  double zero_command_steer_gain_ =
+      1.0;  ///< 零指令回中增益 Zero-command steering centering gain
+  double pure_strafe_bias_ =
+      0.0;  ///< 纯横移指令偏置 Pure strafe command bias
+  double pure_strafe_positive_vx_bias_ =
+      0.0;  ///< 纯横移且 vy>0 时的 vx 偏置 Positive-strafe vx bias
+  double pure_reverse_vx_gain_ =
+      1.0;  ///< 纯后退指令 vx 增益 Pure reverse vx gain
+  double pure_reverse_lateral_bias_ =
+      0.0;  ///< 纯后退指令侧向补偿 Pure reverse lateral compensation
+  std::array<double, 9> command_compensation_matrix_{
+      {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};  ///< 速度指令线性补偿矩阵 Row-major 3x3 command compensation matrix
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;               ///< TF 缓冲区 TF buffer
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;  ///< TF 监听器 TF listener
+  OdomState odom_state_;             ///< 累计里程计状态 Integrated odometry state
   ros::Time controller_start_time_;  ///< 控制器启动时刻 Controller start timestamp
+  bool last_command_timed_out_ = true;  ///< 上周期超时状态 Previous-cycle timeout flag
 };
 
 }  // namespace sentry_chassis_controller

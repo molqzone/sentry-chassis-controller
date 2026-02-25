@@ -1,2 +1,5 @@
 # Generated backup files
 *.bak.*
+
+# Python cache
+__pycache__/

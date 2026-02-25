@@ -10,7 +10,16 @@
 
 ## 运行链路
 
-- 主链路仅保留 plugin：`roslaunch sentry_chassis_controller sentry_chassis_controller.launch`
+- 仅控制器链路（不含 Gazebo）：`roslaunch sentry_chassis_controller sentry_chassis_controller.launch`
+- 仿真一体链路（Gazebo + 模型 + 控制器 + Foxglove bridge）：
+  `roslaunch sentry_chassis_controller sentry_sim.launch`
+  - 模型由本包 overlay xacro 生成：`urdf/sentry_overlay.urdf.xacro`（不修改第三方源码）
+  - 默认后端：`foxglove_bridge`，Foxglove 连接地址：`ws://localhost:8765`
+  - 可切换回 rosbridge：`roslaunch sentry_chassis_controller sentry_sim.launch foxglove_backend:=rosbridge`
+    - rosbridge 连接地址：`ws://localhost:9090`
+    - rosbridge 模式默认启动 mesh 静态资源服务：`http://localhost:8766`
+  - 如需关闭 Foxglove bridge：`roslaunch sentry_chassis_controller sentry_sim.launch with_foxglove:=false`
+  - 如需关闭 rosbridge 模式的 mesh 资源服务：`roslaunch sentry_chassis_controller sentry_sim.launch with_foxglove_mesh_server:=false`
 
 ## 项目特有内容
 
@@ -41,6 +50,15 @@
 - `odom_max_angular_speed`：里程计角速度保护上限（rad/s），超过则丢弃该周期解算，默认 `16.0`
 - `odom_integrate_on_timeout`：指令超时后是否继续积分里程计，默认 `false`（避免启动/空闲漂移）
 - `publish_tf`：是否发布 `odom -> base_link` TF，默认 `true`
+- `wheel_effort_limit`：轮速 PID 输出绝对值限幅，默认 `12.0`
+- `command_compensation_matrix`：3x3 行优先线性补偿矩阵（`[vx, vy, wz] -> [vx', vy', wz']`），默认单位阵
+- `opposite_sign_yaw_gain`：当 `vx` 与 `wz` 反号时，额外放大 `wz` 的逆解增益（`>=1.0`）
+- `opposite_sign_lateral_bias`：当 `vx` 与 `wz` 反号时，按 `|wz|` 注入负向 `vy` 补偿（`>=0.0`）
+- `zero_command_steer_gain`：零指令阶段舵向回中误差增益（`>=1.0`）
+- `pure_strafe_bias`：纯横移且 `vy>0` 时附加的 `vy` 偏置（`>=0.0`）
+- `pure_strafe_positive_vx_bias`：纯横移且 `vy>0` 时附加的负向 `vx` 偏置（`>=0.0`）
+- `pure_reverse_vx_gain`：纯后退 (`vx<0, vy=0, wz=0`) 的 `vx` 增益（`>=1.0`）
+- `pure_reverse_lateral_bias`：纯后退时附加的负向 `vy` 补偿（`>=0.0`）
 - `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
 - `steer_zero_offsets`：四个舵向零位目标（rad）
 - `wheel_rolling_signs`：四个轮子的滚动方向符号，轮序固定 `front_left, front_right, rear_left, rear_right`，每项只能为 `-1` 或 `1`
@@ -118,6 +136,50 @@ sentry_chassis_controller:
   command_frame_id: odom
   base_frame_id: base_link
 ```
+
+## 键盘操控（teleop_twist_keyboard）
+
+建议先启动仿真一体链路：
+
+- `roslaunch sentry_chassis_controller sentry_sim.launch`
+
+然后在交互终端运行：
+
+- `rosrun sentry_chassis_controller teleop_keyboard.sh`
+
+脚本默认发布到 `/cmd_vel`，并提供环境变量覆盖：
+
+- `CMD_VEL_TOPIC`：速度话题，默认 `/cmd_vel`
+- `TELEOP_SPEED`：线速度标量，默认 `0.5`
+- `TELEOP_TURN`：角速度标量，默认 `1.0`
+- `TELEOP_REPEAT_RATE`：重复发送频率，默认 `20.0`
+- `TELEOP_KEY_TIMEOUT`：按键超时，默认 `0.6`
+
+示例（提高速度并改话题）：
+
+- `CMD_VEL_TOPIC=/my_cmd_vel TELEOP_SPEED=0.8 TELEOP_TURN=1.4 rosrun sentry_chassis_controller teleop_keyboard.sh`
+
+注意事项：
+
+- 该命令必须在 TTY 终端中运行（例如本地终端、`docker exec -it` 终端）。
+- 若在 DevContainer 中使用，确保已完成工作区构建并可访问 ROS master。
+
+## 自动行为评估脚本
+
+在仿真运行后，可用如下脚本自动发布 `cmd_vel` 段并输出 JSON 评估结果：
+
+- `rosrun sentry_chassis_controller evaluate_teleop_behavior.py`
+
+脚本默认评估三段行为：
+
+- `forward`: `(vx, vy, wz) = (0.6, 0.0, 0.0)`
+- `left`: `(vx, vy, wz) = (0.0, 0.6, 0.0)`
+- `rotate`: `(vx, vy, wz) = (0.0, 0.0, 0.8)`
+
+输出中包含两套判定：
+
+- `strict`: 严格轨迹约束（适合验收）
+- `directional`: 仅方向正确性约束（适合快速回归）
 
 ## 在线调参与观测
 

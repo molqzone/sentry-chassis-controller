@@ -96,10 +96,21 @@ install(FILES
 install(DIRECTORY
   doc
   config
+  urdf
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
 install(FILES
   launch/sentry_chassis_controller.launch
+  launch/sentry_sim.launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+)
+
+install(PROGRAMS
+  scripts/teleop_keyboard.sh
+  scripts/serve_rm_description_meshes.py
+  scripts/evaluate_teleop_behavior.py
+  scripts/evaluate_teleop_keys.py
+  scripts/auto_calibrate_signs.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

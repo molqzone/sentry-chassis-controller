@@ -13,6 +13,15 @@ sentry_chassis_controller:
   odom_max_angular_speed: 16.0
   odom_integrate_on_timeout: false
   publish_tf: true
+  wheel_effort_limit: 12.0
+  opposite_sign_yaw_gain: 2.0
+  opposite_sign_lateral_bias: 0.15
+  zero_command_steer_gain: 1.0
+  pure_strafe_bias: 0.4
+  pure_strafe_positive_vx_bias: 0.25
+  pure_reverse_vx_gain: 1.0
+  pure_reverse_lateral_bias: 0.0
+  command_compensation_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
   steer_joints:
   - left_front_pivot_joint
   - right_front_pivot_joint
@@ -23,11 +32,11 @@ sentry_chassis_controller:
   - right_front_wheel_joint
   - left_back_wheel_joint
   - right_back_wheel_joint
-  wheel_rolling_signs: [1, -1, -1, -1]
+  wheel_rolling_signs: [1, 1, 1, 1]
   wheel_direction_signs:
-    vx: [1, -1, -1, -1]
-    vy: [-1, -1, -1, 1]
-    wz: [1, 1, 1, -1]
+    vx: [1, 1, 1, 1]
+    vy: [1, 1, 1, 1]
+    wz: [1, 1, 1, 1]
   geometry:
     wheel_base: 0.362
     track_width: 0.362
@@ -40,33 +49,33 @@ sentry_chassis_controller:
   pid:
     steer:
       front_left:
-        p: 7.880252444294682
+        p: 12.0
         i: 0.160729173929626
-        d: 0.08297143827516885
+        d: 0.12
         i_clamp_min: -0.4
         i_clamp_max: 0.4
         antiwindup: true
         publish_state: true
       front_right:
-        p: 7.880252444294682
+        p: 12.0
         i: 0.160729173929626
-        d: 0.08297143827516885
+        d: 0.12
         i_clamp_min: -0.4
         i_clamp_max: 0.4
         antiwindup: true
         publish_state: true
       rear_left:
-        p: 7.880252444294682
+        p: 12.0
         i: 0.160729173929626
-        d: 0.08297143827516885
+        d: 0.12
         i_clamp_min: -0.4
         i_clamp_max: 0.4
         antiwindup: true
         publish_state: true
       rear_right:
-        p: 7.880252444294682
+        p: 12.0
         i: 0.160729173929626
-        d: 0.08297143827516885
+        d: 0.12
         i_clamp_min: -0.4
         i_clamp_max: 0.4
         antiwindup: true
