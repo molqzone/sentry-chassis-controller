@@ -36,32 +36,18 @@ const std::array<std::string, SentryChassisController::WHEEL_COUNT> WHEEL_NAME_S
     "front_left", "front_right", "rear_left", "rear_right"};
 
 template <typename T, std::size_t N>
-bool CopyVectorToArray(const std::vector<T>& source, std::array<T, N>* output)
-{
-  if (output == nullptr || source.size() != N)
-  {
-    return false;
-  }
-
-  for (std::size_t i = 0; i < N; ++i)
-  {
-    output->at(i) = source[i];
-  }
-  return true;
-}
-
-template <typename T, std::size_t N>
 bool LoadRequiredArrayParam(ros::NodeHandle& nh, const std::string& param_name,
                             std::array<T, N>* output)
 {
   std::vector<T> raw_values;
-  if (!nh.getParam(param_name, raw_values) || raw_values.size() != N)
+  if (output == nullptr || !nh.getParam(param_name, raw_values) || raw_values.size() != N)
   {
     ROS_ERROR("Parameter '%s' must exist and contain exactly %zu items.",
               param_name.c_str(), N);
     return false;
   }
-  return CopyVectorToArray(raw_values, output);
+  std::copy_n(raw_values.begin(), N, output->begin());
+  return true;
 }
 
 template <typename T, std::size_t N>
@@ -81,7 +67,12 @@ bool LoadOptionalArrayParam(ros::NodeHandle& nh, const std::string& param_name,
     ROS_ERROR("Parameter '%s' must contain exactly %zu items.", param_name.c_str(), N);
     return false;
   }
-  return CopyVectorToArray(raw_values, output);
+  if (output == nullptr)
+  {
+    return false;
+  }
+  std::copy_n(raw_values.begin(), N, output->begin());
+  return true;
 }
 
 void ClampNonNegativeParam(const char* param_name, double* value)
