@@ -52,13 +52,7 @@
 - `publish_tf`：是否发布 `odom -> base_link` TF，默认 `true`
 - `wheel_effort_limit`：轮速 PID 输出绝对值限幅，默认 `12.0`
 - `command_compensation_matrix`：3x3 行优先线性补偿矩阵（`[vx, vy, wz] -> [vx', vy', wz']`），默认单位阵
-- `opposite_sign_yaw_gain`：当 `vx` 与 `wz` 反号时，额外放大 `wz` 的逆解增益（`>=1.0`）
-- `opposite_sign_lateral_bias`：当 `vx` 与 `wz` 反号时，按 `|wz|` 注入负向 `vy` 补偿（`>=0.0`）
-- `zero_command_steer_gain`：零指令阶段舵向回中误差增益（`>=1.0`）
-- `pure_strafe_bias`：纯横移且 `vy>0` 时附加的 `vy` 偏置（`>=0.0`）
-- `pure_strafe_positive_vx_bias`：纯横移且 `vy>0` 时附加的负向 `vx` 偏置（`>=0.0`）
-- `pure_reverse_vx_gain`：纯后退 (`vx<0, vy=0, wz=0`) 的 `vx` 增益（`>=1.0`）
-- `pure_reverse_lateral_bias`：纯后退时附加的负向 `vy` 补偿（`>=0.0`）
+- 控制器逆解层不再包含离散特判补偿（如 pure strafe/reverse/opposite-sign 分支）；行为修正统一通过 `command_compensation_matrix` 与底层 PID/机械参数完成
 - `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
 - `steer_zero_offsets`：四个舵向零位目标（rad）
 - `wheel_rolling_signs`：四个轮子的滚动方向符号，轮序固定 `front_left, front_right, rear_left, rear_right`，每项只能为 `-1` 或 `1`

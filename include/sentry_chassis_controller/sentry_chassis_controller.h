@@ -251,8 +251,9 @@ class SentryChassisController
    * @param  joints 关节句柄组 Joint handle group
    * @param  command 目标命令值 Target command value
    */
-  static void SetAllCommands(std::vector<hardware_interface::JointHandle>* joints,
-                             double command);
+  static void SetAllCommands(
+      std::array<hardware_interface::JointHandle, WHEEL_COUNT>* joints,
+      double command);
 
   /**
    * @brief  发布当前里程计与 TF
@@ -262,9 +263,9 @@ class SentryChassisController
    */
   void PublishOdometry(const ros::Time& time, const Kinematics::ChassisTwist& twist);
 
-  std::vector<hardware_interface::JointHandle>
+  std::array<hardware_interface::JointHandle, WHEEL_COUNT>
       steer_joints_;  ///< 舵向关节句柄 Steering joint handles
-  std::vector<hardware_interface::JointHandle>
+  std::array<hardware_interface::JointHandle, WHEEL_COUNT>
       wheel_joints_;  ///< 轮速关节句柄 Wheel joint handles
   std::array<control_toolbox::Pid, WHEEL_COUNT>
       steer_pids_;  ///< 4 路舵向 PID 4 steering PID loops
@@ -305,20 +306,6 @@ class SentryChassisController
   bool publish_tf_ = true;  ///< 是否发布 odom->base_link TF Whether to publish odom TF
   double wheel_effort_limit_ =
       12.0;  ///< 轮速回路输出限幅（绝对值） Wheel effort command limit (absolute)
-  double opposite_sign_yaw_gain_ =
-      1.0;  ///< vx 与 wz 反号时的 yaw 增益 Opposite-sign vx/wz yaw gain
-  double opposite_sign_lateral_bias_ =
-      0.0;  ///< vx 与 wz 反号时的侧向补偿 Opposite-sign vx/wz lateral compensation
-  double zero_command_steer_gain_ =
-      1.0;  ///< 零指令回中增益 Zero-command steering centering gain
-  double pure_strafe_bias_ =
-      0.0;  ///< 纯横移指令偏置 Pure strafe command bias
-  double pure_strafe_positive_vx_bias_ =
-      0.0;  ///< 纯横移且 vy>0 时的 vx 偏置 Positive-strafe vx bias
-  double pure_reverse_vx_gain_ =
-      1.0;  ///< 纯后退指令 vx 增益 Pure reverse vx gain
-  double pure_reverse_lateral_bias_ =
-      0.0;  ///< 纯后退指令侧向补偿 Pure reverse lateral compensation
   std::array<double, 9> command_compensation_matrix_{
       {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};  ///< 速度指令线性补偿矩阵 Row-major 3x3 command compensation matrix
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;               ///< TF 缓冲区 TF buffer
