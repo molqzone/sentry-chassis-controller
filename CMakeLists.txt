@@ -22,16 +22,20 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_ros
   tf2_geometry_msgs
 )
+find_package(Eigen3 REQUIRED)
+set(Eigen3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
 
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ${PROJECT_NAME}_core ${PROJECT_NAME}
   CATKIN_DEPENDS roscpp geometry_msgs controller_interface controller_manager hardware_interface pluginlib control_toolbox dynamic_reconfigure realtime_tools nav_msgs tf tf2 tf2_ros tf2_geometry_msgs
+  DEPENDS Eigen3
 )
 
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIRS}
 )
 
 add_library(${PROJECT_NAME}_core

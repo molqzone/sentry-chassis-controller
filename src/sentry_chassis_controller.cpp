@@ -1,5 +1,6 @@
 #include "sentry_chassis_controller/sentry_chassis_controller.h"
 
+#include <Eigen/Dense>
 #include <geometry_msgs/TransformStamped.h>
 #include <geometry_msgs/Vector3Stamped.h>
 #include <hardware_interface/internal/hardware_resource_manager.h>
@@ -117,20 +118,15 @@ void ClampMinParam(const char* param_name, double min_value, double* value)
 Kinematics::ChassisTwist ApplyCommandCompensation(
     const std::array<double, 9>& matrix, const Kinematics::ChassisTwist& input)
 {
-  const std::array<double, 3> INPUT = {{input.vx, input.vy, input.wz}};
-  std::array<double, 3> output_values = {{0.0, 0.0, 0.0}};
-  for (std::size_t row = 0; row < 3U; ++row)
-  {
-    for (std::size_t col = 0; col < 3U; ++col)
-    {
-      output_values[row] += matrix[row * 3U + col] * INPUT[col];
-    }
-  }
+  const Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>> COMPENSATION(
+      matrix.data());
+  const Eigen::Vector3d INPUT(input.vx, input.vy, input.wz);
+  const Eigen::Vector3d OUTPUT = COMPENSATION * INPUT;
 
   Kinematics::ChassisTwist output;
-  output.vx = output_values[0];
-  output.vy = output_values[1];
-  output.wz = output_values[2];
+  output.vx = OUTPUT.x();
+  output.vy = OUTPUT.y();
+  output.wz = OUTPUT.z();
   return output;
 }
 }  // namespace
