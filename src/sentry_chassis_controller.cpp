@@ -530,17 +530,30 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
       {-HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
       {-HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
   }};
-  std::array<double, WHEEL_COUNT> STEER_ERRORS{};
-  std::array<double, WHEEL_COUNT> WHEEL_TARGET_VALUES{};
-  std::array<double, WHEEL_COUNT> ALIGNMENTS{};
-
-  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+  if (ZERO_CMD_REQUESTED)
   {
-    double steer_error =
-        NormalizeAngle(steer_zero_offsets_[i] - steer_joints_[i].getPosition());
-    double wheel_target = 0.0;
-    double alignment = 1.0;
-    if (!ZERO_CMD_REQUESTED)
+    for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+    {
+      const double STEER_ERROR =
+          NormalizeAngle(steer_zero_offsets_[i] - steer_joints_[i].getPosition());
+      // 舵向按位置误差闭环，零指令时回归零位。
+      // Steering loop closes on position error and recenters on zero command.
+      const double STEER_EFFORT = steer_pids_[i].computeCommand(STEER_ERROR, period);
+      steer_joints_[i].setCommand(STEER_EFFORT);
+    }
+
+    for (auto& pid : wheel_pids_)
+    {
+      pid.reset();
+    }
+    SetAllCommands(&wheel_joints_, 0.0);
+  }
+  else
+  {
+    std::array<double, WHEEL_COUNT> WHEEL_TARGET_VALUES{};
+    std::array<double, WHEEL_COUNT> ALIGNMENTS{};
+
+    for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
     {
       // Swerve IK: project chassis twist to each module velocity, then convert
       // to target steering angle and wheel speed.
@@ -552,6 +565,11 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
       const double MODULE_VX = SIGNED_VX - SIGNED_WZ * MODULE_Y;
       const double MODULE_VY = SIGNED_VY + SIGNED_WZ * MODULE_X;
       const double MODULE_SPEED = std::hypot(MODULE_VX, MODULE_VY);
+
+      double steer_error =
+          NormalizeAngle(steer_zero_offsets_[i] - steer_joints_[i].getPosition());
+      double wheel_target = 0.0;
+      double alignment = 1.0;
       if (MODULE_SPEED > ZERO_CMD_EPS)
       {
         const double TARGET_STEER =
@@ -575,27 +593,16 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
         alignment = std::max(0.0, std::cos(steer_error));
         wheel_target *= alignment;
       }
-    }
-    STEER_ERRORS[i] = steer_error;
-    WHEEL_TARGET_VALUES[i] = wheel_target;
-    ALIGNMENTS[i] = alignment;
 
-    // 舵向按位置误差闭环，目标值按每轮目标舵角实时计算。
-    // Steering loop closes on per-wheel target steering angle error.
-    const double STEER_EFFORT = steer_pids_[i].computeCommand(STEER_ERRORS[i], period);
-    steer_joints_[i].setCommand(STEER_EFFORT);
-  }
+      WHEEL_TARGET_VALUES[i] = wheel_target;
+      ALIGNMENTS[i] = alignment;
 
-  if (ZERO_CMD_REQUESTED)
-  {
-    for (auto& pid : wheel_pids_)
-    {
-      pid.reset();
+      // 舵向按位置误差闭环，目标值按每轮目标舵角实时计算。
+      // Steering loop closes on per-wheel target steering angle error.
+      const double STEER_EFFORT = steer_pids_[i].computeCommand(steer_error, period);
+      steer_joints_[i].setCommand(STEER_EFFORT);
     }
-    SetAllCommands(&wheel_joints_, 0.0);
-  }
-  else
-  {
+
     double global_alignment = 1.0;
     for (const double alignment : ALIGNMENTS)
     {
