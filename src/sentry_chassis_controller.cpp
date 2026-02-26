@@ -521,30 +521,22 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
       {-HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
       {-HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
   }};
-  if (ZERO_CMD_REQUESTED)
-  {
-    for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
-    {
-      const double STEER_ERROR =
-          NormalizeAngle(steer_zero_offsets_[i] - steer_joints_[i].getPosition());
-      // 舵向按位置误差闭环，零指令时回归零位。
-      // Steering loop closes on position error and recenters on zero command.
-      const double STEER_EFFORT = steer_pids_[i].computeCommand(STEER_ERROR, period);
-      steer_joints_[i].setCommand(STEER_EFFORT);
-    }
+  std::array<double, WHEEL_COUNT> steer_errors{};
+  std::array<double, WHEEL_COUNT> wheel_target_values{};
+  std::array<double, WHEEL_COUNT> alignments{};
+  std::array<bool, WHEEL_COUNT> wheel_pid_reset_flags{};
 
-    for (auto& pid : wheel_pids_)
-    {
-      pid.reset();
-    }
-    SetAllCommands(&wheel_joints_, 0.0);
-  }
-  else
+  // Unified control flow: compute per-wheel targets first, then execute control.
+  // 零指令与非零指令仅在目标值与轮速环策略上不同，执行层保持一致。
+  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
   {
-    std::array<double, WHEEL_COUNT> WHEEL_TARGET_VALUES{};
-    std::array<double, WHEEL_COUNT> ALIGNMENTS{};
+    double steer_error =
+        NormalizeAngle(steer_zero_offsets_[i] - steer_joints_[i].getPosition());
+    double wheel_target = 0.0;
+    double alignment = 1.0;
+    bool reset_wheel_pid = ZERO_CMD_REQUESTED;
 
-    for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+    if (!ZERO_CMD_REQUESTED)
     {
       // Swerve IK: project chassis twist to each module velocity, then convert
       // to target steering angle and wheel speed.
@@ -557,10 +549,6 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
       const double MODULE_VY = SIGNED_VY + SIGNED_WZ * MODULE_X;
       const double MODULE_SPEED = std::hypot(MODULE_VX, MODULE_VY);
 
-      double steer_error =
-          NormalizeAngle(steer_zero_offsets_[i] - steer_joints_[i].getPosition());
-      double wheel_target = 0.0;
-      double alignment = 1.0;
       if (MODULE_SPEED > ZERO_CMD_EPS)
       {
         const double TARGET_STEER =
@@ -584,18 +572,27 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
         alignment = std::max(0.0, std::cos(steer_error));
         wheel_target *= alignment;
       }
-
-      WHEEL_TARGET_VALUES[i] = wheel_target;
-      ALIGNMENTS[i] = alignment;
-
-      // 舵向按位置误差闭环，目标值按每轮目标舵角实时计算。
-      // Steering loop closes on per-wheel target steering angle error.
-      const double STEER_EFFORT = steer_pids_[i].computeCommand(steer_error, period);
-      steer_joints_[i].setCommand(STEER_EFFORT);
+      reset_wheel_pid = false;
     }
 
-    double global_alignment = 1.0;
-    for (const double alignment : ALIGNMENTS)
+    steer_errors[i] = steer_error;
+    wheel_target_values[i] = wheel_target;
+    alignments[i] = alignment;
+    wheel_pid_reset_flags[i] = reset_wheel_pid;
+  }
+
+  // Steering actuation (always active).
+  // 舵向控制统一执行，区别仅来自上游目标计算结果。
+  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+  {
+    const double STEER_EFFORT = steer_pids_[i].computeCommand(steer_errors[i], period);
+    steer_joints_[i].setCommand(STEER_EFFORT);
+  }
+
+  double global_alignment = 1.0;
+  if (!ZERO_CMD_REQUESTED)
+  {
+    for (const double alignment : alignments)
     {
       global_alignment = std::min(global_alignment, alignment);
     }
@@ -603,20 +600,27 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     {
       global_alignment = 0.0;
     }
+  }
 
-    for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+  {
+    if (wheel_pid_reset_flags[i])
     {
-      // 轮速按速度误差闭环，目标值由逆运动学解算得到。
-      // Wheel loop closes on velocity error using IK-computed targets.
-      const double ROLLING_SIGN = static_cast<double>(wheel_rolling_signs_[i]);
-      const double SIGNED_WHEEL_VELOCITY = ROLLING_SIGN * wheel_joints_[i].getVelocity();
-      const double WHEEL_TARGET = WHEEL_TARGET_VALUES[i] * global_alignment;
-      const double WHEEL_ERROR = WHEEL_TARGET - SIGNED_WHEEL_VELOCITY;
-      const double SIGNED_WHEEL_EFFORT = wheel_pids_[i].computeCommand(WHEEL_ERROR, period);
-      const double LIMITED_SIGNED_WHEEL_EFFORT =
-          std::max(-wheel_effort_limit_, std::min(wheel_effort_limit_, SIGNED_WHEEL_EFFORT));
-      wheel_joints_[i].setCommand(ROLLING_SIGN * LIMITED_SIGNED_WHEEL_EFFORT);
+      wheel_pids_[i].reset();
+      wheel_joints_[i].setCommand(0.0);
+      continue;
     }
+
+    // 轮速按速度误差闭环，目标值由逆运动学解算得到。
+    // Wheel loop closes on velocity error using IK-computed targets.
+    const double ROLLING_SIGN = static_cast<double>(wheel_rolling_signs_[i]);
+    const double SIGNED_WHEEL_VELOCITY = ROLLING_SIGN * wheel_joints_[i].getVelocity();
+    const double WHEEL_TARGET = wheel_target_values[i] * global_alignment;
+    const double WHEEL_ERROR = WHEEL_TARGET - SIGNED_WHEEL_VELOCITY;
+    const double SIGNED_WHEEL_EFFORT = wheel_pids_[i].computeCommand(WHEEL_ERROR, period);
+    const double LIMITED_SIGNED_WHEEL_EFFORT =
+        std::max(-wheel_effort_limit_, std::min(wheel_effort_limit_, SIGNED_WHEEL_EFFORT));
+    wheel_joints_[i].setCommand(ROLLING_SIGN * LIMITED_SIGNED_WHEEL_EFFORT);
   }
 
   Kinematics::WheelFeedback feedback;
