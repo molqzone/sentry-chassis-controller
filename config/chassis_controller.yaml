@@ -14,7 +14,7 @@ sentry_chassis_controller:
   odom_integrate_on_timeout: false
   publish_tf: true
   wheel_effort_limit: 12.0
-  command_compensation_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -0.2, 0.0, 2.0]
+  command_compensation_matrix: [1.0, 0.1, 0.0, 0.0, 1.4, 0.0, -0.2, 0.0, 2.0]
   steer_joints:
   - left_front_pivot_joint
   - right_front_pivot_joint

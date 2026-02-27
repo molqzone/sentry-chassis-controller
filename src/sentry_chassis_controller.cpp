@@ -30,6 +30,7 @@ constexpr double ZERO_CMD_EPS = 1e-4;
 constexpr double GLOBAL_ALIGNMENT_GATE = 0.20;
 constexpr double PI = 3.14159265358979323846;
 constexpr double HALF_PI = PI * 0.5;
+constexpr double STEER_FLIP_EPS = 0.05;
 // 轮序后缀固定为前左、前右、后左、后右，需与配置文件和运动学保持一致。
 // Wheel order suffix must stay aligned with config and kinematics.
 const std::array<std::string, SentryChassisController::WHEEL_COUNT> WHEEL_NAME_SUFFIX = {
@@ -55,6 +56,11 @@ bool LoadOptionalArrayParam(ros::NodeHandle& nh, const std::string& param_name,
                             const std::array<T, N>& default_values,
                             std::array<T, N>* output)
 {
+  if (output == nullptr)
+  {
+    return false;
+  }
+
   std::vector<T> raw_values;
   if (!nh.getParam(param_name, raw_values))
   {
@@ -65,10 +71,6 @@ bool LoadOptionalArrayParam(ros::NodeHandle& nh, const std::string& param_name,
   if (raw_values.size() != N)
   {
     ROS_ERROR("Parameter '%s' must contain exactly %zu items.", param_name.c_str(), N);
-    return false;
-  }
-  if (output == nullptr)
-  {
     return false;
   }
   std::copy_n(raw_values.begin(), N, output->begin());
@@ -557,20 +559,20 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
         wheel_target = MODULE_SPEED / WHEEL_RADIUS;
 
         // Flip wheel direction if turning more than 90deg to reach target.
-        if (steer_error > HALF_PI)
+        if (steer_error > HALF_PI + STEER_FLIP_EPS)
         {
           steer_error -= PI;
           wheel_target = -wheel_target;
         }
-        else if (steer_error < -HALF_PI)
+        else if (steer_error < -HALF_PI - STEER_FLIP_EPS)
         {
           steer_error += PI;
           wheel_target = -wheel_target;
         }
 
-        // Reduce wheel speed while steering is not aligned to avoid transient spin.
-        alignment = std::max(0.0, std::cos(steer_error));
-        wheel_target *= alignment;
+        // Keep command authority during 90deg strafe turns; alignment gating is
+        // handled by steering loop dynamics instead of wheel-speed attenuation.
+        alignment = 1.0;
       }
       reset_wheel_pid = false;
     }
@@ -589,18 +591,9 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     steer_joints_[i].setCommand(STEER_EFFORT);
   }
 
-  double global_alignment = 1.0;
-  if (!ZERO_CMD_REQUESTED)
-  {
-    for (const double alignment : alignments)
-    {
-      global_alignment = std::min(global_alignment, alignment);
-    }
-    if (global_alignment < GLOBAL_ALIGNMENT_GATE)
-    {
-      global_alignment = 0.0;
-    }
-  }
+  // Keep per-wheel alignment scaling, but avoid full-vehicle hard gating.
+  // A single module lagging should not stall all wheel targets.
+  const double global_alignment = 1.0;
 
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
   {
