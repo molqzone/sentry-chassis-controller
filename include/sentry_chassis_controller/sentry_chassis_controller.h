@@ -3,6 +3,7 @@
 
 #include <control_toolbox/pid.h>
 #include <controller_interface/controller.h>
+#include <ddynamic_reconfigure/ddynamic_reconfigure.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <geometry_msgs/Twist.h>
 #include <hardware_interface/joint_command_interface.h>
@@ -152,6 +153,8 @@ class SentryChassisController
   void stopping(const ros::Time& time) override;
 
  private:
+  friend class SentryChassisControllerRuntimeParamsTestAccessor;
+
   /**
    * @brief  实时缓存中的速度指令快照
    *         Velocity command snapshot stored in realtime buffer
@@ -163,6 +166,26 @@ class SentryChassisController
     double wz = 0.0;     ///< z 向角速度（base_link） z-axis angular velocity in base_link
     ros::Time stamp;     ///< 指令时间戳 Command timestamp
     bool valid = false;  ///< 指令有效标记 Command validity flag
+  };
+
+  /**
+   * @brief  实时控制循环只读的参数快照
+   *         Runtime parameter snapshot consumed by realtime update loop
+   */
+  struct RuntimeParams
+  {
+    CommandVelocityMode command_velocity_mode = CommandVelocityMode::BASE_LINK;
+    std::string command_frame_id = "base_link";
+    std::string odom_frame_id = "odom";
+    std::string base_frame_id = "base_link";
+    double cmd_vel_timeout = 0.25;
+    double odom_startup_hold_sec = 1.0;
+    double odom_max_linear_speed = 8.0;
+    double odom_max_angular_speed = 16.0;
+    bool odom_integrate_on_timeout = false;
+    bool publish_tf = true;
+    double wheel_effort_limit = 12.0;
+    Kinematics::Geometry geometry{};
   };
 
   /**
@@ -218,10 +241,12 @@ class SentryChassisController
    *         Resolves current command into base-frame twist
    * @param  command 原始命令 Raw command
    * @param  time 当前控制时刻 Current control time
+   * @param  runtime_params 实时参数快照 Runtime parameter snapshot
    * @param  base_twist 输出到底盘坐标系的速度 Output base-frame twist
    * @return 转换是否成功 Resolve success flag
    */
   bool ResolveCommandInBaseFrame(const CommandData& command, const ros::Time& time,
+                                 const RuntimeParams& runtime_params,
                                  Kinematics::ChassisTwist* base_twist);
 
   /**
@@ -240,10 +265,29 @@ class SentryChassisController
    * @brief  判断正运动学输出是否在可接受范围内
    *         Checks whether forward-kinematics twist is within safe bounds
    * @param  twist 本周期底盘速度 Current cycle chassis twist
+   * @param  runtime_params 实时参数快照 Runtime parameter snapshot
    * @return 可接受返回 true，否则返回 false
    *         Returns true when acceptable, false otherwise
    */
-  bool IsOdomTwistAcceptable(const Kinematics::ChassisTwist& twist) const;
+  bool IsOdomTwistAcceptable(const Kinematics::ChassisTwist& twist,
+                             const RuntimeParams& runtime_params) const;
+
+  /**
+   * @brief  同步并约束控制器运行参数
+   *         Validates and applies controller runtime parameters
+   * @param  strict_validation 严格模式下参数非法返回失败
+   *         Strict mode returns false on invalid parameter
+   * @return 参数有效返回 true，否则返回 false
+   *         Returns true when parameters are valid
+   */
+  bool ValidateAndApplyControllerParams(bool strict_validation);
+
+  /**
+   * @brief  将实时参数快照应用到控制循环上下文
+   *         Applies runtime snapshot to update-loop local context
+   * @param  runtime_params 实时参数快照 Runtime parameter snapshot
+   */
+  void ApplyRuntimeParamsInUpdate(const RuntimeParams& runtime_params);
 
   /**
    * @brief  将一组关节命令统一设置为同一数值
@@ -260,8 +304,10 @@ class SentryChassisController
    *         Publishes current odometry and TF
    * @param  time 当前控制时刻 Current control time
    * @param  twist 本周期底盘速度 Current cycle chassis twist
+   * @param  runtime_params 实时参数快照 Runtime parameter snapshot
    */
-  void PublishOdometry(const ros::Time& time, const Kinematics::ChassisTwist& twist);
+  void PublishOdometry(const ros::Time& time, const Kinematics::ChassisTwist& twist,
+                       const RuntimeParams& runtime_params);
 
   std::array<hardware_interface::JointHandle, WHEEL_COUNT>
       steer_joints_;  ///< 舵向关节句柄 Steering joint handles
@@ -285,7 +331,14 @@ class SentryChassisController
       tf_broadcaster_;  ///< TF 广播器 TF broadcaster
   realtime_tools::RealtimeBuffer<CommandData>
       command_buffer_;  ///< 实时安全指令缓存 Realtime-safe command buffer
+  realtime_tools::RealtimeBuffer<RuntimeParams>
+      runtime_params_buffer_;  ///< 实时循环参数快照缓存 Runtime parameter snapshot buffer
+  std::unique_ptr<ddynamic_reconfigure::DDynamicReconfigure>
+      controller_params_reconfigure_;       ///< 控制器参数动态调参服务 Controller param dynamic server
+  RuntimeParams runtime_params_shadow_;     ///< 非实时线程参数缓存 Non-realtime parameter cache
   std::string cmd_vel_topic_ = "/cmd_vel";  ///< 指令话题 Command topic
+  std::string command_velocity_mode_text_ =
+      "base_link";  ///< 指令模式参数文本 Command mode parameter text
   CommandVelocityMode command_velocity_mode_ =
       CommandVelocityMode::BASE_LINK;  ///< 指令解析模式 Command interpretation mode
   std::string command_frame_id_ = "base_link";  ///< 指令坐标系 Command frame id
@@ -295,6 +348,9 @@ class SentryChassisController
   std::string odom_topic_ = "/odom";    ///< 里程计话题 Odometry topic
   std::string odom_frame_id_ = "odom";  ///< 里程计父坐标系 Odom frame id
   std::string base_frame_id_ = "base_link";  ///< 底盘坐标系 Base frame id
+  Kinematics::Geometry applied_geometry_{};  ///< update线程生效几何参数 Runtime-applied geometry
+  std::string applied_odom_frame_id_;        ///< 最近一次生效的 odom 帧 Last applied odom frame id
+  std::string applied_base_frame_id_;        ///< 最近一次生效的 base 帧 Last applied base frame id
   double odom_startup_hold_sec_ =
       1.0;  ///< 启动静置窗口（秒） Startup settling window in seconds
   double odom_max_linear_speed_ =

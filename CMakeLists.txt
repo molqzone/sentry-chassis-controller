@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   pluginlib
   control_toolbox
   dynamic_reconfigure
+  ddynamic_reconfigure
   realtime_tools
   nav_msgs
   tf
@@ -28,7 +29,7 @@ set(Eigen3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ${PROJECT_NAME}_core ${PROJECT_NAME}
-  CATKIN_DEPENDS roscpp geometry_msgs controller_interface controller_manager hardware_interface pluginlib control_toolbox dynamic_reconfigure realtime_tools nav_msgs tf tf2 tf2_ros tf2_geometry_msgs
+  CATKIN_DEPENDS roscpp geometry_msgs controller_interface controller_manager hardware_interface pluginlib control_toolbox dynamic_reconfigure ddynamic_reconfigure realtime_tools nav_msgs tf tf2 tf2_ros tf2_geometry_msgs
   DEPENDS Eigen3
 )
 
@@ -69,6 +70,7 @@ if(CATKIN_ENABLE_TESTING)
     test/KinematicsTest.cpp
     test/SentryChassisControllerPidTest.cpp
     test/SentryChassisControllerOdomTest.cpp
+    test/SentryChassisControllerRuntimeParamTest.cpp
   )
   if(TARGET ${PROJECT_NAME}-test)
     target_link_libraries(${PROJECT_NAME}-test
