@@ -46,6 +46,12 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     controller->base_frame_id_ = base_frame_id;
   }
 
+  static void SetOdomFrameId(SentryChassisController* controller,
+                             const std::string& odom_frame_id)
+  {
+    controller->odom_frame_id_ = odom_frame_id;
+  }
+
   static void SetCmdVelTimeout(SentryChassisController* controller, double timeout)
   {
     controller->cmd_vel_timeout_ = timeout;
@@ -199,6 +205,26 @@ TEST(SentryChassisControllerRuntimeParams,
             runtime_params->command_velocity_mode);
   EXPECT_EQ("global",
             SentryChassisControllerRuntimeParamsTestAccessor::GetModeText(&controller));
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     ValidateAndApplyControllerParamsSanitizesEmptyFrameIds)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  SentryChassisControllerRuntimeParamsTestAccessor::SetModeText(&controller, "global");
+  SentryChassisControllerRuntimeParamsTestAccessor::SetBaseFrameId(&controller, "");
+  SentryChassisControllerRuntimeParamsTestAccessor::SetOdomFrameId(&controller, "");
+  SentryChassisControllerRuntimeParamsTestAccessor::SetCommandFrameId(&controller, "");
+
+  ASSERT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::ValidateAndApply(&controller, false));
+  const auto* runtime_params =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadRuntimeParams(&controller);
+  ASSERT_NE(runtime_params, nullptr);
+  EXPECT_EQ("base_link", runtime_params->base_frame_id);
+  EXPECT_EQ("odom", runtime_params->odom_frame_id);
+  EXPECT_EQ("odom", runtime_params->command_frame_id);
 }
 
 TEST(SentryChassisControllerRuntimeParams,

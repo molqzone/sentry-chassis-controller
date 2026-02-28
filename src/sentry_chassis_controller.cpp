@@ -531,6 +531,26 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   }
   command_velocity_mode_ = parsed_mode;
 
+  if (base_frame_id_.empty())
+  {
+    ROS_WARN("Parameter 'base_frame_id' is empty. Falling back to 'base_link'.");
+    base_frame_id_ = "base_link";
+  }
+  if (odom_frame_id_.empty())
+  {
+    ROS_WARN("Parameter 'odom_frame_id' is empty. Falling back to 'odom'.");
+    odom_frame_id_ = "odom";
+  }
+  if (command_frame_id_.empty())
+  {
+    const std::string FALLBACK_COMMAND_FRAME =
+        command_velocity_mode_ == CommandVelocityMode::BASE_LINK ? base_frame_id_
+                                                                 : odom_frame_id_;
+    ROS_WARN("Parameter 'command_frame_id' is empty. Falling back to '%s'.",
+             FALLBACK_COMMAND_FRAME.c_str());
+    command_frame_id_ = FALLBACK_COMMAND_FRAME;
+  }
+
   if (command_velocity_mode_ == CommandVelocityMode::BASE_LINK &&
       command_frame_id_ != base_frame_id_)
   {
