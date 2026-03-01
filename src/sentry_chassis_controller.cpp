@@ -1,14 +1,15 @@
 #include "sentry_chassis_controller/sentry_chassis_controller.h"
 
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 #include <geometry_msgs/TransformStamped.h>
-#include <geometry_msgs/Vector3Stamped.h>
 #include <hardware_interface/internal/hardware_resource_manager.h>
 #include <nav_msgs/Odometry.h>
 #include <pluginlib/class_list_macros.h>
+#include <sophus/se2.hpp>
+#include <sophus/so2.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/exceptions.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include <array>
 #include <algorithm>
@@ -40,6 +41,20 @@ constexpr double DEFAULT_ODOM_STARTUP_HOLD = 1.0;
 constexpr double DEFAULT_ODOM_MAX_LINEAR_SPEED = 8.0;
 constexpr double DEFAULT_ODOM_MAX_ANGULAR_SPEED = 16.0;
 constexpr double DEFAULT_WHEEL_EFFORT_LIMIT = 12.0;
+constexpr double DEFAULT_REVERSE_CCW_VX_SCALE = 1.0;
+constexpr double DEFAULT_REVERSE_CCW_WZ_GAIN = 1.0;
+constexpr double DEFAULT_REVERSE_CCW_VY_THRESHOLD = 0.03;
+constexpr double DEFAULT_REVERSE_CCW_STEER_PRIORITY_ERROR = 0.6;
+constexpr double MIN_REVERSE_CCW_VX_SCALE = 0.1;
+constexpr double MAX_REVERSE_CCW_VX_SCALE = 1.0;
+constexpr double MIN_REVERSE_CCW_WZ_GAIN = 1.0;
+constexpr double MAX_REVERSE_CCW_WZ_GAIN = 3.0;
+constexpr double MIN_REVERSE_CCW_VY_THRESHOLD = 0.0;
+constexpr double MAX_REVERSE_CCW_VY_THRESHOLD = 0.5;
+constexpr double MIN_REVERSE_CCW_STEER_PRIORITY_ERROR = 0.0;
+constexpr double MAX_REVERSE_CCW_STEER_PRIORITY_ERROR = PI;
+constexpr double REVERSE_STRAIGHT_VX_BOOST = 1.10;
+constexpr double MIN_QUATERNION_NORM = 1e-12;
 // 轮序后缀固定为前左、前右、后左、后右，需与配置文件和运动学保持一致。
 // Wheel order suffix must stay aligned with config and kinematics.
 const std::array<std::string, SentryChassisController::WHEEL_COUNT> WHEEL_NAME_SUFFIX = {
@@ -61,6 +76,26 @@ Kinematics::ChassisTwist ApplyCommandCompensation(
   output.vy = OUTPUT.y();
   output.wz = OUTPUT.z();
   return output;
+}
+
+bool BuildRotationFromQuaternion(const geometry_msgs::Quaternion& quaternion,
+                                 Eigen::Matrix3d* rotation_matrix)
+{
+  if (rotation_matrix == nullptr)
+  {
+    return false;
+  }
+
+  const Eigen::Quaterniond RAW_QUATERNION(quaternion.w, quaternion.x, quaternion.y,
+                                          quaternion.z);
+  if (RAW_QUATERNION.norm() < MIN_QUATERNION_NORM)
+  {
+    return false;
+  }
+
+  const Eigen::Quaterniond NORMALIZED_QUATERNION = RAW_QUATERNION.normalized();
+  *rotation_matrix = NORMALIZED_QUATERNION.toRotationMatrix();
+  return true;
 }
 }  // namespace
 
@@ -146,6 +181,10 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   odom_max_linear_speed_ = DEFAULT_ODOM_MAX_LINEAR_SPEED;
   odom_max_angular_speed_ = DEFAULT_ODOM_MAX_ANGULAR_SPEED;
   wheel_effort_limit_ = DEFAULT_WHEEL_EFFORT_LIMIT;
+  reverse_ccw_vx_scale_ = DEFAULT_REVERSE_CCW_VX_SCALE;
+  reverse_ccw_wz_gain_ = DEFAULT_REVERSE_CCW_WZ_GAIN;
+  reverse_ccw_vy_threshold_ = DEFAULT_REVERSE_CCW_VY_THRESHOLD;
+  reverse_ccw_steer_priority_error_ = DEFAULT_REVERSE_CCW_STEER_PRIORITY_ERROR;
 
   ddynamic_reconfigure::DDynamicReconfigure parameter_loader(nh);
   parameter_loader.registerVariable<std::string>(
@@ -197,6 +236,22 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   parameter_loader.registerVariable<double>(
       "wheel_effort_limit", &wheel_effort_limit_,
       "Absolute wheel effort limit.", MIN_VALID_DT, 100.0);
+  parameter_loader.registerVariable<double>(
+      "reverse_ccw_vx_scale", &reverse_ccw_vx_scale_,
+      "Reverse-CCW compensation vx scale.", MIN_REVERSE_CCW_VX_SCALE,
+      MAX_REVERSE_CCW_VX_SCALE);
+  parameter_loader.registerVariable<double>(
+      "reverse_ccw_wz_gain", &reverse_ccw_wz_gain_,
+      "Reverse-CCW compensation wz gain.", MIN_REVERSE_CCW_WZ_GAIN,
+      MAX_REVERSE_CCW_WZ_GAIN);
+  parameter_loader.registerVariable<double>(
+      "reverse_ccw_vy_threshold", &reverse_ccw_vy_threshold_,
+      "Reverse-CCW compensation |vy| trigger threshold.",
+      MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD);
+  parameter_loader.registerVariable<double>(
+      "reverse_ccw_steer_priority_error", &reverse_ccw_steer_priority_error_,
+      "Reverse-CCW steering-priority error threshold.",
+      MIN_REVERSE_CCW_STEER_PRIORITY_ERROR, MAX_REVERSE_CCW_STEER_PRIORITY_ERROR);
   parameter_loader.registerVariable<double>("geometry/wheel_base", &geometry_.wheel_base,
                                             "Wheel base in meters.", 0.0, 5.0);
   parameter_loader.registerVariable<double>("geometry/track_width", &geometry_.track_width,
@@ -323,6 +378,22 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
         "wheel_effort_limit", &wheel_effort_limit_,
         "Absolute wheel effort limit.", MIN_VALID_DT, 100.0);
     controller_params_reconfigure_->registerVariable<double>(
+        "reverse_ccw_vx_scale", &reverse_ccw_vx_scale_,
+        "Reverse-CCW compensation vx scale.", MIN_REVERSE_CCW_VX_SCALE,
+        MAX_REVERSE_CCW_VX_SCALE);
+    controller_params_reconfigure_->registerVariable<double>(
+        "reverse_ccw_wz_gain", &reverse_ccw_wz_gain_,
+        "Reverse-CCW compensation wz gain.", MIN_REVERSE_CCW_WZ_GAIN,
+        MAX_REVERSE_CCW_WZ_GAIN);
+    controller_params_reconfigure_->registerVariable<double>(
+        "reverse_ccw_vy_threshold", &reverse_ccw_vy_threshold_,
+        "Reverse-CCW compensation |vy| trigger threshold.",
+        MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD);
+    controller_params_reconfigure_->registerVariable<double>(
+        "reverse_ccw_steer_priority_error", &reverse_ccw_steer_priority_error_,
+        "Reverse-CCW steering-priority error threshold.",
+        MIN_REVERSE_CCW_STEER_PRIORITY_ERROR, MAX_REVERSE_CCW_STEER_PRIORITY_ERROR);
+    controller_params_reconfigure_->registerVariable<double>(
         "geometry/wheel_base", &geometry_.wheel_base, "Wheel base in meters.", 0.0, 5.0);
     controller_params_reconfigure_->registerVariable<double>(
         "geometry/track_width", &geometry_.track_width, "Track width in meters.", 0.0,
@@ -393,7 +464,7 @@ bool SentryChassisController::IsCommandTimedOut(bool command_valid,
 
 double SentryChassisController::NormalizeAngle(double angle)
 {
-  return std::atan2(std::sin(angle), std::cos(angle));
+  return Sophus::SO2d::exp(angle).log();
 }
 
 SentryChassisController::OdomState SentryChassisController::IntegrateOdom(
@@ -404,16 +475,15 @@ SentryChassisController::OdomState SentryChassisController::IntegrateOdom(
     return state;
   }
 
-  OdomState result = state;
-  const double YAW_MID = result.yaw + 0.5 * twist.wz * dt;
-  const double DELTA_X =
-      (twist.vx * std::cos(YAW_MID) - twist.vy * std::sin(YAW_MID)) * dt;
-  const double DELTA_Y =
-      (twist.vx * std::sin(YAW_MID) + twist.vy * std::cos(YAW_MID)) * dt;
+  const Sophus::SE2d WORLD_FROM_BASE(
+      Sophus::SO2d::exp(state.yaw), Eigen::Vector2d(state.x, state.y));
+  const Eigen::Vector3d BODY_TANGENT(twist.vx * dt, twist.vy * dt, twist.wz * dt);
+  const Sophus::SE2d WORLD_FROM_BASE_NEXT = WORLD_FROM_BASE * Sophus::SE2d::exp(BODY_TANGENT);
 
-  result.x += DELTA_X;
-  result.y += DELTA_Y;
-  result.yaw = NormalizeAngle(result.yaw + twist.wz * dt);
+  OdomState result;
+  result.x = WORLD_FROM_BASE_NEXT.translation().x();
+  result.y = WORLD_FROM_BASE_NEXT.translation().y();
+  result.yaw = NormalizeAngle(WORLD_FROM_BASE_NEXT.so2().log());
   return result;
 }
 
@@ -426,29 +496,21 @@ bool SentryChassisController::TransformTwistWithTransform(
     return false;
   }
 
-  geometry_msgs::Vector3Stamped linear_input;
-  linear_input.header.stamp = transform.header.stamp;
-  linear_input.header.frame_id = transform.child_frame_id;
-  linear_input.vector.x = input.vx;
-  linear_input.vector.y = input.vy;
-  linear_input.vector.z = 0.0;
+  Eigen::Matrix3d source_to_target_rotation;
+  if (!BuildRotationFromQuaternion(transform.transform.rotation,
+                                   &source_to_target_rotation))
+  {
+    return false;
+  }
 
-  geometry_msgs::Vector3Stamped linear_output;
-  tf2::doTransform(linear_input, linear_output, transform);
+  const Eigen::Vector3d LINEAR_INPUT(input.vx, input.vy, 0.0);
+  const Eigen::Vector3d ANGULAR_INPUT(0.0, 0.0, input.wz);
+  const Eigen::Vector3d LINEAR_OUTPUT = source_to_target_rotation * LINEAR_INPUT;
+  const Eigen::Vector3d ANGULAR_OUTPUT = source_to_target_rotation * ANGULAR_INPUT;
 
-  geometry_msgs::Vector3Stamped angular_input;
-  angular_input.header.stamp = transform.header.stamp;
-  angular_input.header.frame_id = transform.child_frame_id;
-  angular_input.vector.x = 0.0;
-  angular_input.vector.y = 0.0;
-  angular_input.vector.z = input.wz;
-
-  geometry_msgs::Vector3Stamped angular_output;
-  tf2::doTransform(angular_input, angular_output, transform);
-
-  output->vx = linear_output.vector.x;
-  output->vy = linear_output.vector.y;
-  output->wz = angular_output.vector.z;
+  output->vx = LINEAR_OUTPUT.x();
+  output->vy = LINEAR_OUTPUT.y();
+  output->wz = ANGULAR_OUTPUT.z();
   return true;
 }
 
@@ -509,6 +571,49 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
     ROS_WARN("Parameter 'wheel_effort_limit' must be positive. Clamping to %.3f.",
              DEFAULT_WHEEL_EFFORT_LIMIT);
     wheel_effort_limit_ = DEFAULT_WHEEL_EFFORT_LIMIT;
+  }
+  if (reverse_ccw_vx_scale_ < MIN_REVERSE_CCW_VX_SCALE ||
+      reverse_ccw_vx_scale_ > MAX_REVERSE_CCW_VX_SCALE)
+  {
+    ROS_WARN(
+        "Parameter 'reverse_ccw_vx_scale' must be in [%.3f, %.3f]. Clamping.",
+        MIN_REVERSE_CCW_VX_SCALE, MAX_REVERSE_CCW_VX_SCALE);
+    reverse_ccw_vx_scale_ =
+        std::max(MIN_REVERSE_CCW_VX_SCALE,
+                 std::min(MAX_REVERSE_CCW_VX_SCALE, reverse_ccw_vx_scale_));
+  }
+  if (reverse_ccw_wz_gain_ < MIN_REVERSE_CCW_WZ_GAIN ||
+      reverse_ccw_wz_gain_ > MAX_REVERSE_CCW_WZ_GAIN)
+  {
+    ROS_WARN(
+        "Parameter 'reverse_ccw_wz_gain' must be in [%.3f, %.3f]. Clamping.",
+        MIN_REVERSE_CCW_WZ_GAIN, MAX_REVERSE_CCW_WZ_GAIN);
+    reverse_ccw_wz_gain_ =
+        std::max(MIN_REVERSE_CCW_WZ_GAIN,
+                 std::min(MAX_REVERSE_CCW_WZ_GAIN, reverse_ccw_wz_gain_));
+  }
+  if (reverse_ccw_vy_threshold_ < MIN_REVERSE_CCW_VY_THRESHOLD ||
+      reverse_ccw_vy_threshold_ > MAX_REVERSE_CCW_VY_THRESHOLD)
+  {
+    ROS_WARN(
+        "Parameter 'reverse_ccw_vy_threshold' must be in [%.3f, %.3f]. Clamping.",
+        MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD);
+    reverse_ccw_vy_threshold_ =
+        std::max(MIN_REVERSE_CCW_VY_THRESHOLD,
+                 std::min(MAX_REVERSE_CCW_VY_THRESHOLD, reverse_ccw_vy_threshold_));
+  }
+  if (reverse_ccw_steer_priority_error_ < MIN_REVERSE_CCW_STEER_PRIORITY_ERROR ||
+      reverse_ccw_steer_priority_error_ > MAX_REVERSE_CCW_STEER_PRIORITY_ERROR)
+  {
+    ROS_WARN(
+        "Parameter 'reverse_ccw_steer_priority_error' must be in [%.3f, %.3f]. "
+        "Clamping.",
+        MIN_REVERSE_CCW_STEER_PRIORITY_ERROR,
+        MAX_REVERSE_CCW_STEER_PRIORITY_ERROR);
+    reverse_ccw_steer_priority_error_ =
+        std::max(MIN_REVERSE_CCW_STEER_PRIORITY_ERROR,
+                 std::min(MAX_REVERSE_CCW_STEER_PRIORITY_ERROR,
+                          reverse_ccw_steer_priority_error_));
   }
 
   CommandVelocityMode parsed_mode = command_velocity_mode_;
@@ -580,6 +685,11 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   runtime_params_shadow_.odom_integrate_on_timeout = odom_integrate_on_timeout_;
   runtime_params_shadow_.publish_tf = publish_tf_;
   runtime_params_shadow_.wheel_effort_limit = wheel_effort_limit_;
+  runtime_params_shadow_.reverse_ccw_vx_scale = reverse_ccw_vx_scale_;
+  runtime_params_shadow_.reverse_ccw_wz_gain = reverse_ccw_wz_gain_;
+  runtime_params_shadow_.reverse_ccw_vy_threshold = reverse_ccw_vy_threshold_;
+  runtime_params_shadow_.reverse_ccw_steer_priority_error =
+      reverse_ccw_steer_priority_error_;
   runtime_params_shadow_.geometry = geometry_;
   runtime_params_buffer_.writeFromNonRT(runtime_params_shadow_);
   return true;
@@ -737,13 +847,30 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
 
   const Kinematics::ChassisTwist COMPENSATED_COMMAND =
       ApplyCommandCompensation(command_compensation_matrix_, command_twist_base);
-  const double VX = COMPENSATED_COMMAND.vx;
+  double VX = COMPENSATED_COMMAND.vx;
   const double VY = COMPENSATED_COMMAND.vy;
-  const double WZ = COMPENSATED_COMMAND.wz;
+  double WZ = COMPENSATED_COMMAND.wz;
+  if (VX < -ZERO_CMD_EPS && std::fabs(VY) <= runtime_params->reverse_ccw_vy_threshold &&
+      WZ > ZERO_CMD_EPS)
+  {
+    VX *= runtime_params->reverse_ccw_vx_scale;
+    WZ *= runtime_params->reverse_ccw_wz_gain;
+  }
+  if (VX < -ZERO_CMD_EPS && std::fabs(VY) <= runtime_params->reverse_ccw_vy_threshold &&
+      std::fabs(WZ) <= ZERO_CMD_EPS)
+  {
+    VX *= REVERSE_STRAIGHT_VX_BOOST;
+  }
 
   const bool ZERO_CMD_REQUESTED =
       std::fabs(VX) < ZERO_CMD_EPS && std::fabs(VY) < ZERO_CMD_EPS &&
       std::fabs(WZ) < ZERO_CMD_EPS;
+  const bool HAS_YAW_COMMAND = std::fabs(WZ) >= ZERO_CMD_EPS;
+  const bool HAS_TRANSLATION_COMMAND =
+      std::fabs(VX) >= ZERO_CMD_EPS || std::fabs(VY) >= ZERO_CMD_EPS;
+  const bool REVERSE_CCW_MODE =
+      VX < -ZERO_CMD_EPS && std::fabs(VY) <= runtime_params->reverse_ccw_vy_threshold &&
+      WZ > ZERO_CMD_EPS;
   const double HALF_WHEEL_BASE = applied_geometry_.wheel_base * 0.5;
   const double HALF_TRACK_WIDTH = applied_geometry_.track_width * 0.5;
   const double WHEEL_RADIUS =
@@ -779,32 +906,70 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
       const double SIGNED_VX = static_cast<double>(direction_signs_.vx[i]) * VX;
       const double SIGNED_VY = static_cast<double>(direction_signs_.vy[i]) * VY;
       const double SIGNED_WZ = static_cast<double>(direction_signs_.wz[i]) * WZ;
-      const double MODULE_VX = SIGNED_VX - SIGNED_WZ * MODULE_Y;
-      const double MODULE_VY = SIGNED_VY + SIGNED_WZ * MODULE_X;
-      const double MODULE_SPEED = std::hypot(MODULE_VX, MODULE_VY);
-
-      if (MODULE_SPEED > ZERO_CMD_EPS)
+      const auto SOLVE_MODULE_TARGET =
+          [&](double requested_signed_vx, double requested_signed_vy,
+              double requested_signed_wz, double* solved_steer_error,
+              double* solved_wheel_target) -> bool
       {
+        if (solved_steer_error == nullptr || solved_wheel_target == nullptr)
+        {
+          return false;
+        }
+        const double MODULE_VX =
+            requested_signed_vx - requested_signed_wz * MODULE_Y;
+        const double MODULE_VY =
+            requested_signed_vy + requested_signed_wz * MODULE_X;
+        const double MODULE_SPEED = std::hypot(MODULE_VX, MODULE_VY);
+        if (MODULE_SPEED <= ZERO_CMD_EPS)
+        {
+          return false;
+        }
+
         const double TARGET_STEER =
             std::atan2(MODULE_VY, MODULE_VX) + steer_zero_offsets_[i];
-        steer_error = NormalizeAngle(TARGET_STEER - steer_joints_[i].getPosition());
-        wheel_target = MODULE_SPEED / WHEEL_RADIUS;
-
+        double solved_error =
+            NormalizeAngle(TARGET_STEER - steer_joints_[i].getPosition());
+        double solved_target = MODULE_SPEED / WHEEL_RADIUS;
         // Flip wheel direction if turning more than 90deg to reach target.
-        if (steer_error > HALF_PI + STEER_FLIP_EPS)
+        if (solved_error > HALF_PI + STEER_FLIP_EPS)
         {
-          steer_error -= PI;
-          wheel_target = -wheel_target;
+          solved_error -= PI;
+          solved_target = -solved_target;
         }
-        else if (steer_error < -HALF_PI - STEER_FLIP_EPS)
+        else if (solved_error < -HALF_PI - STEER_FLIP_EPS)
         {
-          steer_error += PI;
-          wheel_target = -wheel_target;
+          solved_error += PI;
+          solved_target = -solved_target;
         }
+        *solved_steer_error = solved_error;
+        *solved_wheel_target = solved_target;
+        return true;
+      };
 
-        // Keep command authority during 90deg strafe turns; alignment gating is
-        // handled by steering loop dynamics instead of wheel-speed attenuation.
+      bool has_module_target =
+          SOLVE_MODULE_TARGET(SIGNED_VX, SIGNED_VY, SIGNED_WZ, &steer_error, &wheel_target);
+      if (has_module_target && REVERSE_CCW_MODE &&
+          std::fabs(steer_error) > runtime_params->reverse_ccw_steer_priority_error)
+      {
+        // Steering-priority mode: when reverse-CCW command arrives while steering
+        // still has large error, temporarily solve wheel target without the reverse
+        // translation component to avoid opposite-yaw transients.
+        has_module_target =
+            SOLVE_MODULE_TARGET(0.0, SIGNED_VY, SIGNED_WZ, &steer_error, &wheel_target);
+      }
+
+      if (has_module_target)
+      {
+        // Gate wheel speed only when yaw command is active so steering direction
+        // switches (e.g. reverse turn) do not inject opposite yaw transients.
         alignment = 1.0;
+        if (HAS_YAW_COMMAND)
+        {
+          const double ALIGNMENT_FLOOR =
+              HAS_TRANSLATION_COMMAND ? 0.0 : GLOBAL_ALIGNMENT_GATE;
+          alignment = std::max(0.0, std::cos(steer_error));
+          alignment = std::max(alignment, ALIGNMENT_FLOOR);
+        }
       }
       reset_wheel_pid = false;
     }
@@ -823,8 +988,8 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     steer_joints_[i].setCommand(STEER_EFFORT);
   }
 
-  // Keep per-wheel alignment scaling, but avoid full-vehicle hard gating.
-  // A single module lagging should not stall all wheel targets.
+  // Use per-wheel alignment scaling for yaw commands while avoiding full-vehicle
+  // hard gating. A single module lagging should not stall all wheel targets.
   const double global_alignment = 1.0;
 
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
@@ -840,7 +1005,7 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     // Wheel loop closes on velocity error using IK-computed targets.
     const double ROLLING_SIGN = static_cast<double>(wheel_rolling_signs_[i]);
     const double SIGNED_WHEEL_VELOCITY = ROLLING_SIGN * wheel_joints_[i].getVelocity();
-    const double WHEEL_TARGET = wheel_target_values[i] * global_alignment;
+    const double WHEEL_TARGET = wheel_target_values[i] * alignments[i] * global_alignment;
     const double WHEEL_ERROR = WHEEL_TARGET - SIGNED_WHEEL_VELOCITY;
     const double SIGNED_WHEEL_EFFORT = wheel_pids_[i].computeCommand(WHEEL_ERROR, period);
     const double LIMITED_SIGNED_WHEEL_EFFORT =

@@ -51,9 +51,30 @@ TEST(SentryChassisControllerOdom, IntegratesLateralAndYawMotion)
   const Kinematics::ChassisTwist TWIST{0.0, 1.0, 1.0};
   const auto INTEGRATED = SentryChassisController::IntegrateOdom(START_STATE, TWIST, 1.0);
 
-  EXPECT_NEAR(-std::sin(0.5), INTEGRATED.x, 1e-9);
-  EXPECT_NEAR(std::cos(0.5), INTEGRATED.y, 1e-9);
+  EXPECT_NEAR(std::cos(1.0) - 1.0, INTEGRATED.x, 1e-9);
+  EXPECT_NEAR(std::sin(1.0), INTEGRATED.y, 1e-9);
   EXPECT_NEAR(1.0, INTEGRATED.yaw, 1e-9);
+}
+
+TEST(SentryChassisControllerOdom, IntegratesNearZeroYawRateStably)
+{
+  const SentryChassisController::OdomState START_STATE{1.0, -2.0, 0.3};
+  const Kinematics::ChassisTwist TWIST{0.8, -0.4, 1e-12};
+  constexpr double DT = 0.5;
+
+  const auto INTEGRATED = SentryChassisController::IntegrateOdom(START_STATE, TWIST, DT);
+  const double EXPECTED_X =
+      START_STATE.x +
+      (TWIST.vx * std::cos(START_STATE.yaw) - TWIST.vy * std::sin(START_STATE.yaw)) * DT;
+  const double EXPECTED_Y =
+      START_STATE.y +
+      (TWIST.vx * std::sin(START_STATE.yaw) + TWIST.vy * std::cos(START_STATE.yaw)) * DT;
+  const double EXPECTED_YAW =
+      SentryChassisController::NormalizeAngle(START_STATE.yaw + TWIST.wz * DT);
+
+  EXPECT_NEAR(EXPECTED_X, INTEGRATED.x, 1e-9);
+  EXPECT_NEAR(EXPECTED_Y, INTEGRATED.y, 1e-9);
+  EXPECT_NEAR(EXPECTED_YAW, INTEGRATED.yaw, 1e-12);
 }
 
 TEST(SentryChassisControllerOdom, NormalizesYawToPiRange)

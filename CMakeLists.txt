@@ -24,19 +24,25 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_geometry_msgs
 )
 find_package(Eigen3 REQUIRED)
+find_package(Sophus REQUIRED)
 set(Eigen3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
+if(TARGET Sophus::Sophus)
+  set(Sophus_LIBRARIES Sophus::Sophus)
+  get_target_property(Sophus_INCLUDE_DIRS Sophus::Sophus INTERFACE_INCLUDE_DIRECTORIES)
+endif()
 
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ${PROJECT_NAME}_core ${PROJECT_NAME}
   CATKIN_DEPENDS roscpp geometry_msgs controller_interface controller_manager hardware_interface pluginlib control_toolbox dynamic_reconfigure ddynamic_reconfigure realtime_tools nav_msgs tf tf2 tf2_ros tf2_geometry_msgs
-  DEPENDS Eigen3
+  DEPENDS Eigen3 Sophus
 )
 
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
+  ${Sophus_INCLUDE_DIRS}
 )
 
 add_library(${PROJECT_NAME}_core
@@ -48,11 +54,13 @@ add_library(${PROJECT_NAME}
 )
 
 target_link_libraries(${PROJECT_NAME}_core
+  ${Sophus_LIBRARIES}
   ${catkin_LIBRARIES}
 )
 
 target_link_libraries(${PROJECT_NAME}
   ${PROJECT_NAME}_core
+  ${Sophus_LIBRARIES}
   ${catkin_LIBRARIES}
 )
 
@@ -76,6 +84,7 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(${PROJECT_NAME}-test
       ${PROJECT_NAME}
       ${PROJECT_NAME}_core
+      ${Sophus_LIBRARIES}
       ${catkin_LIBRARIES}
     )
   endif()

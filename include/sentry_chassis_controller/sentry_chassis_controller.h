@@ -185,6 +185,10 @@ class SentryChassisController
     bool odom_integrate_on_timeout = false;
     bool publish_tf = true;
     double wheel_effort_limit = 12.0;
+    double reverse_ccw_vx_scale = 1.0;
+    double reverse_ccw_wz_gain = 1.0;
+    double reverse_ccw_vy_threshold = 0.03;
+    double reverse_ccw_steer_priority_error = 0.6;
     Kinematics::Geometry geometry{};
   };
 
@@ -362,6 +366,14 @@ class SentryChassisController
   bool publish_tf_ = true;  ///< 是否发布 odom->base_link TF Whether to publish odom TF
   double wheel_effort_limit_ =
       12.0;  ///< 轮速回路输出限幅（绝对值） Wheel effort command limit (absolute)
+  double reverse_ccw_vx_scale_ =
+      1.0;  ///< 反向左转补偿：vx 缩放 Reverse-CCW compensation vx scale
+  double reverse_ccw_wz_gain_ =
+      1.0;  ///< 反向左转补偿：wz 增益 Reverse-CCW compensation wz gain
+  double reverse_ccw_vy_threshold_ =
+      0.03;  ///< 反向左转补偿触发阈值 Reverse-CCW compensation |vy| trigger threshold
+  double reverse_ccw_steer_priority_error_ =
+      0.6;  ///< 反向左转补偿：舵向优先误差阈值 Reverse-CCW steering-priority threshold
   std::array<double, 9> command_compensation_matrix_{
       {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};  ///< 速度指令线性补偿矩阵 Row-major 3x3 command compensation matrix
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;               ///< TF 缓冲区 TF buffer

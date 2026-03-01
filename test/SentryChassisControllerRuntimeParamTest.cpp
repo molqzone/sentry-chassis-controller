@@ -77,6 +77,28 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     controller->wheel_effort_limit_ = effort_limit;
   }
 
+  static void SetReverseCcwVxScale(SentryChassisController* controller, double vx_scale)
+  {
+    controller->reverse_ccw_vx_scale_ = vx_scale;
+  }
+
+  static void SetReverseCcwWzGain(SentryChassisController* controller, double wz_gain)
+  {
+    controller->reverse_ccw_wz_gain_ = wz_gain;
+  }
+
+  static void SetReverseCcwVyThreshold(SentryChassisController* controller,
+                                       double vy_threshold)
+  {
+    controller->reverse_ccw_vy_threshold_ = vy_threshold;
+  }
+
+  static void SetReverseCcwSteerPriorityError(
+      SentryChassisController* controller, double steer_priority_error)
+  {
+    controller->reverse_ccw_steer_priority_error_ = steer_priority_error;
+  }
+
   static void SetWheelRadius(SentryChassisController* controller, double wheel_radius)
   {
     controller->geometry_.wheel_radius = wheel_radius;
@@ -159,6 +181,12 @@ TEST(SentryChassisControllerRuntimeParams,
   SentryChassisControllerRuntimeParamsTestAccessor::SetOdomMaxLinearSpeed(&controller, 0.0);
   SentryChassisControllerRuntimeParamsTestAccessor::SetOdomMaxAngularSpeed(&controller, -5.0);
   SentryChassisControllerRuntimeParamsTestAccessor::SetWheelEffortLimit(&controller, 0.0);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetReverseCcwVxScale(&controller, 0.0);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetReverseCcwWzGain(&controller, 0.5);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetReverseCcwVyThreshold(&controller,
+                                                                              -0.1);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetReverseCcwSteerPriorityError(
+      &controller, -0.2);
   SentryChassisControllerRuntimeParamsTestAccessor::SetWheelRadius(&controller, 0.0);
 
   ASSERT_TRUE(
@@ -171,6 +199,10 @@ TEST(SentryChassisControllerRuntimeParams,
   EXPECT_DOUBLE_EQ(8.0, runtime_params->odom_max_linear_speed);
   EXPECT_DOUBLE_EQ(16.0, runtime_params->odom_max_angular_speed);
   EXPECT_DOUBLE_EQ(12.0, runtime_params->wheel_effort_limit);
+  EXPECT_DOUBLE_EQ(0.1, runtime_params->reverse_ccw_vx_scale);
+  EXPECT_DOUBLE_EQ(1.0, runtime_params->reverse_ccw_wz_gain);
+  EXPECT_DOUBLE_EQ(0.0, runtime_params->reverse_ccw_vy_threshold);
+  EXPECT_DOUBLE_EQ(0.0, runtime_params->reverse_ccw_steer_priority_error);
   EXPECT_GE(runtime_params->geometry.wheel_radius, K_MIN_WHEEL_RADIUS);
   EXPECT_EQ("base_link", runtime_params->command_frame_id);
 }
