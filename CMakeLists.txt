@@ -50,6 +50,9 @@ add_library(${PROJECT_NAME}_core
 )
 
 add_library(${PROJECT_NAME}
+  src/controller_math.cpp
+  src/controller_init.cpp
+  src/controller_update.cpp
   src/sentry_chassis_controller.cpp
 )
 
@@ -76,6 +79,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(${PROJECT_NAME}-test
     test/test_sentry_chassis_controller.cpp
     test/KinematicsTest.cpp
+    test/ControllerMathTest.cpp
     test/SentryChassisControllerPidTest.cpp
     test/SentryChassisControllerOdomTest.cpp
     test/SentryChassisControllerRuntimeParamTest.cpp

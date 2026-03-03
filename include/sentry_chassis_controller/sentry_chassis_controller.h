@@ -212,6 +212,60 @@ class SentryChassisController
                     std::array<control_toolbox::Pid, WHEEL_COUNT>* pid_array);
 
   /**
+   * @brief  加载控制器静态配置并初始化运行参数快照
+   *         Loads static controller config and initializes runtime parameter snapshot
+   */
+  bool LoadControllerConfig(
+      ros::NodeHandle& nh, std::array<std::string, WHEEL_COUNT>* steer_joint_names,
+      std::array<std::string, WHEEL_COUNT>* wheel_joint_names);
+
+  /**
+   * @brief  注册动态参数（供初始化阶段和运行时复用）
+   *         Registers shared dynamic parameters (reused by init and runtime)
+   */
+  void RegisterSharedRuntimeParameters(
+      ddynamic_reconfigure::DDynamicReconfigure* parameter_loader);
+
+  /**
+   * @brief  初始化硬件关节句柄
+   *         Initializes hardware joint handles
+   */
+  bool InitJointHandles(
+      hardware_interface::EffortJointInterface* hw,
+      const std::array<std::string, WHEEL_COUNT>& steer_joint_names,
+      const std::array<std::string, WHEEL_COUNT>& wheel_joint_names);
+
+  /**
+   * @brief  初始化控制器 PID 组
+   *         Initializes controller PID groups
+   */
+  bool InitControllerPids(ros::NodeHandle& nh);
+
+  /**
+   * @brief  初始化实时状态与缓存
+   *         Initializes realtime state and buffers
+   */
+  void InitRealtimeState();
+
+  /**
+   * @brief  初始化 ROS 话题接口
+   *         Initializes ROS topic interfaces
+   */
+  void InitRosInterfaces(ros::NodeHandle& nh);
+
+  /**
+   * @brief  初始化 TF 相关资源
+   *         Initializes TF-related resources
+   */
+  void InitTfResources();
+
+  /**
+   * @brief  初始化运行时动态调参服务
+   *         Initializes runtime dynamic reconfigure service
+   */
+  bool InitRuntimeDynamicReconfigure(ros::NodeHandle& nh);
+
+  /**
    * @brief  读取并校验轮向符号矩阵参数
    *         Loads and validates wheel direction sign matrix parameters
    * @param  nh 控制器命名空间 Controller namespace
