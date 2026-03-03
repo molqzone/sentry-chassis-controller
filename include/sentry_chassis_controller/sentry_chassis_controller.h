@@ -189,6 +189,15 @@ class SentryChassisController
     double reverse_ccw_wz_gain = 1.0;
     double reverse_ccw_vy_threshold = 0.03;
     double reverse_ccw_steer_priority_error = 0.6;
+    bool enable_acceleration_limits = false;
+    double max_linear_acceleration = 3.0;
+    double max_angular_acceleration = 5.0;
+    bool enable_power_limit = false;
+    bool enable_power_limit_logging = false;
+    double max_power = 360.0;
+    double power_loss_k1 = 0.001;
+    double power_loss_k2 = 0.0001;
+    double min_power_scale = 0.3;
     Kinematics::Geometry geometry{};
   };
 
@@ -348,6 +357,29 @@ class SentryChassisController
   void ApplyRuntimeParamsInUpdate(const RuntimeParams& runtime_params);
 
   /**
+   * @brief  对底盘速度指令应用加速度限制
+   *         Applies acceleration limits to chassis command twist
+   * @param  input 输入速度指令 Input command twist
+   * @param  dt 控制周期（秒） Control period in seconds
+   * @param  runtime_params 实时参数快照 Runtime parameter snapshot
+   * @param  output 限幅后的速度指令 Limited command twist
+   */
+  void ApplyAccelerationLimits(const Kinematics::ChassisTwist& input, double dt,
+                               const RuntimeParams& runtime_params,
+                               Kinematics::ChassisTwist* output);
+
+  /**
+   * @brief  对轮速环输出应用功率限制
+   *         Applies power limiting to wheel effort outputs
+   * @param  runtime_params 实时参数快照 Runtime parameter snapshot
+   * @param  signed_wheel_velocities 轮速反馈（已按 rolling_sign 统一） Signed wheel velocities
+   * @param  signed_wheel_efforts 轮速控制输出（已按 rolling_sign 统一） Signed wheel efforts
+   */
+  void ApplyPowerLimiting(const RuntimeParams& runtime_params,
+                          const std::array<double, WHEEL_COUNT>& signed_wheel_velocities,
+                          std::array<double, WHEEL_COUNT>* signed_wheel_efforts) const;
+
+  /**
    * @brief  将一组关节命令统一设置为同一数值
    *         Sets one command value for all joints in a group
    * @param  joints 关节句柄组 Joint handle group
@@ -428,11 +460,30 @@ class SentryChassisController
       0.03;  ///< 反向左转补偿触发阈值 Reverse-CCW compensation |vy| trigger threshold
   double reverse_ccw_steer_priority_error_ =
       0.6;  ///< 反向左转补偿：舵向优先误差阈值 Reverse-CCW steering-priority threshold
+  bool enable_acceleration_limits_ =
+      false;  ///< 是否启用底盘加速度限制 Enable chassis acceleration limits
+  double max_linear_acceleration_ =
+      3.0;  ///< 最大线加速度（m/s^2） Maximum linear acceleration in m/s^2
+  double max_angular_acceleration_ =
+      5.0;  ///< 最大角加速度（rad/s^2） Maximum angular acceleration in rad/s^2
+  bool enable_power_limit_ = false;  ///< 是否启用功率限制 Enable power limiting
+  bool enable_power_limit_logging_ =
+      false;  ///< 是否打印功率限制日志 Enable power-limit logging
+  double max_power_ = 360.0;  ///< 功率上限（W） Maximum power limit in watts
+  double power_loss_k1_ =
+      0.001;  ///< 力矩损耗项系数 Coefficient for torque-squared loss term
+  double power_loss_k2_ =
+      0.0001;  ///< 转速损耗项系数 Coefficient for velocity-squared loss term
+  double min_power_scale_ = 0.3;  ///< 功率限制最小缩放 Minimum power-limiting scale
   std::array<double, 9> command_compensation_matrix_{
       {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};  ///< 速度指令线性补偿矩阵 Row-major 3x3 command compensation matrix
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;               ///< TF 缓冲区 TF buffer
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;  ///< TF 监听器 TF listener
   OdomState odom_state_;             ///< 累计里程计状态 Integrated odometry state
+  Kinematics::ChassisTwist
+      last_limited_command_;  ///< 上次限幅后的底盘速度 Last acceleration-limited command
+  bool has_last_limited_command_ =
+      false;  ///< 限幅状态是否已初始化 Whether limiter state has been initialized
   ros::Time controller_start_time_;  ///< 控制器启动时刻 Controller start timestamp
   bool last_command_timed_out_ = true;  ///< 上周期超时状态 Previous-cycle timeout flag
 };

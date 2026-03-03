@@ -49,6 +49,17 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
       "max_angular=%.3frad/s, integrate_on_timeout=%s.",
       odom_startup_hold_sec_, odom_max_linear_speed_, odom_max_angular_speed_,
       odom_integrate_on_timeout_ ? "true" : "false");
+  ROS_INFO(
+      "acceleration limits configured with enabled=%s, max_linear=%.3fm/s^2, "
+      "max_angular=%.3frad/s^2.",
+      enable_acceleration_limits_ ? "true" : "false", max_linear_acceleration_,
+      max_angular_acceleration_);
+  ROS_INFO(
+      "power limiting configured with enabled=%s, logging=%s, max_power=%.3fW, "
+      "k1=%.6f, k2=%.6f, min_scale=%.3f.",
+      enable_power_limit_ ? "true" : "false",
+      enable_power_limit_logging_ ? "true" : "false", max_power_, power_loss_k1_,
+      power_loss_k2_, min_power_scale_);
   ROS_INFO("wheel effort command limit configured as %.3f.", wheel_effort_limit_);
   ROS_INFO(
       "wheel_direction_signs loaded: vx=[%d,%d,%d,%d], vy=[%d,%d,%d,%d], "
@@ -112,6 +123,15 @@ bool SentryChassisController::LoadControllerConfig(
   reverse_ccw_wz_gain_ = DEFAULT_REVERSE_CCW_WZ_GAIN;
   reverse_ccw_vy_threshold_ = DEFAULT_REVERSE_CCW_VY_THRESHOLD;
   reverse_ccw_steer_priority_error_ = DEFAULT_REVERSE_CCW_STEER_PRIORITY_ERROR;
+  enable_acceleration_limits_ = DEFAULT_ENABLE_ACCELERATION_LIMITS;
+  max_linear_acceleration_ = DEFAULT_MAX_LINEAR_ACCELERATION;
+  max_angular_acceleration_ = DEFAULT_MAX_ANGULAR_ACCELERATION;
+  enable_power_limit_ = DEFAULT_ENABLE_POWER_LIMIT;
+  enable_power_limit_logging_ = DEFAULT_ENABLE_POWER_LIMIT_LOGGING;
+  max_power_ = DEFAULT_MAX_POWER;
+  power_loss_k1_ = DEFAULT_POWER_LOSS_K1;
+  power_loss_k2_ = DEFAULT_POWER_LOSS_K2;
+  min_power_scale_ = DEFAULT_MIN_POWER_SCALE;
 
   ddynamic_reconfigure::DDynamicReconfigure parameter_loader(nh);
   parameter_loader.registerVariable<std::string>(
@@ -209,6 +229,33 @@ void SentryChassisController::RegisterSharedRuntimeParameters(
       "reverse_ccw_steer_priority_error", &reverse_ccw_steer_priority_error_,
       "Reverse-CCW steering-priority error threshold.",
       MIN_REVERSE_CCW_STEER_PRIORITY_ERROR, MAX_REVERSE_CCW_STEER_PRIORITY_ERROR);
+  parameter_loader->registerVariable<bool>(
+      "enable_acceleration_limits", &enable_acceleration_limits_,
+      boost::function<void(bool)>(), "Enable chassis acceleration limits.", false, true);
+  parameter_loader->registerVariable<double>(
+      "max_linear_acceleration", &max_linear_acceleration_,
+      "Maximum chassis linear acceleration in m/s^2.", MIN_ACCELERATION_LIMIT, 100.0);
+  parameter_loader->registerVariable<double>(
+      "max_angular_acceleration", &max_angular_acceleration_,
+      "Maximum chassis angular acceleration in rad/s^2.", MIN_ACCELERATION_LIMIT, 200.0);
+  parameter_loader->registerVariable<bool>(
+      "enable_power_limit", &enable_power_limit_, boost::function<void(bool)>(),
+      "Enable wheel power limiting.", false, true);
+  parameter_loader->registerVariable<bool>(
+      "enable_power_limit_logging", &enable_power_limit_logging_,
+      boost::function<void(bool)>(), "Enable power limiting status logging.", false, true);
+  parameter_loader->registerVariable<double>(
+      "max_power", &max_power_, "Maximum allowed wheel power in watts.",
+      MIN_POWER_LIMIT, 2000.0);
+  parameter_loader->registerVariable<double>(
+      "power_loss_k1", &power_loss_k1_,
+      "Quadratic torque loss coefficient for power model.", 0.0, 1.0);
+  parameter_loader->registerVariable<double>(
+      "power_loss_k2", &power_loss_k2_,
+      "Quadratic speed loss coefficient for power model.", 0.0, 1.0);
+  parameter_loader->registerVariable<double>(
+      "min_power_scale", &min_power_scale_,
+      "Lower bound for power limiting scale factor.", MIN_POWER_SCALE, MAX_POWER_SCALE);
   parameter_loader->registerVariable<double>(
       "geometry/wheel_base", &geometry_.wheel_base, "Wheel base in meters.", 0.0, 5.0);
   parameter_loader->registerVariable<double>(
@@ -253,6 +300,8 @@ void SentryChassisController::InitRealtimeState()
   command.valid = false;
   command_buffer_.initRT(command);
   odom_state_ = OdomState();
+  last_limited_command_ = Kinematics::ChassisTwist();
+  has_last_limited_command_ = false;
   controller_start_time_ = ros::Time(0);
   last_command_timed_out_ = true;
 }

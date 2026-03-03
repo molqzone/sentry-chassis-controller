@@ -112,6 +112,44 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
                  std::min(MAX_REVERSE_CCW_STEER_PRIORITY_ERROR,
                           reverse_ccw_steer_priority_error_));
   }
+  if (max_linear_acceleration_ <= 0.0)
+  {
+    ROS_WARN("Parameter 'max_linear_acceleration' must be positive. Clamping to %.3f.",
+             DEFAULT_MAX_LINEAR_ACCELERATION);
+    max_linear_acceleration_ = DEFAULT_MAX_LINEAR_ACCELERATION;
+  }
+  if (max_angular_acceleration_ <= 0.0)
+  {
+    ROS_WARN(
+        "Parameter 'max_angular_acceleration' must be positive. Clamping to %.3f.",
+        DEFAULT_MAX_ANGULAR_ACCELERATION);
+    max_angular_acceleration_ = DEFAULT_MAX_ANGULAR_ACCELERATION;
+  }
+  if (max_power_ <= 0.0)
+  {
+    ROS_WARN("Parameter 'max_power' must be positive. Clamping to %.3f.",
+             DEFAULT_MAX_POWER);
+    max_power_ = DEFAULT_MAX_POWER;
+  }
+  if (power_loss_k1_ < 0.0)
+  {
+    ROS_WARN("Parameter 'power_loss_k1' must be non-negative. Clamping to %.6f.",
+             DEFAULT_POWER_LOSS_K1);
+    power_loss_k1_ = DEFAULT_POWER_LOSS_K1;
+  }
+  if (power_loss_k2_ < 0.0)
+  {
+    ROS_WARN("Parameter 'power_loss_k2' must be non-negative. Clamping to %.6f.",
+             DEFAULT_POWER_LOSS_K2);
+    power_loss_k2_ = DEFAULT_POWER_LOSS_K2;
+  }
+  if (min_power_scale_ < MIN_POWER_SCALE || min_power_scale_ > MAX_POWER_SCALE)
+  {
+    ROS_WARN("Parameter 'min_power_scale' must be in [%.3f, %.3f]. Clamping.",
+             MIN_POWER_SCALE, MAX_POWER_SCALE);
+    min_power_scale_ = std::max(MIN_POWER_SCALE,
+                                std::min(MAX_POWER_SCALE, min_power_scale_));
+  }
 
   CommandVelocityMode parsed_mode = command_velocity_mode_;
   if (!ParseCommandVelocityMode(command_velocity_mode_text_, &parsed_mode))
@@ -187,6 +225,15 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   runtime_params_shadow_.reverse_ccw_vy_threshold = reverse_ccw_vy_threshold_;
   runtime_params_shadow_.reverse_ccw_steer_priority_error =
       reverse_ccw_steer_priority_error_;
+  runtime_params_shadow_.enable_acceleration_limits = enable_acceleration_limits_;
+  runtime_params_shadow_.max_linear_acceleration = max_linear_acceleration_;
+  runtime_params_shadow_.max_angular_acceleration = max_angular_acceleration_;
+  runtime_params_shadow_.enable_power_limit = enable_power_limit_;
+  runtime_params_shadow_.enable_power_limit_logging = enable_power_limit_logging_;
+  runtime_params_shadow_.max_power = max_power_;
+  runtime_params_shadow_.power_loss_k1 = power_loss_k1_;
+  runtime_params_shadow_.power_loss_k2 = power_loss_k2_;
+  runtime_params_shadow_.min_power_scale = min_power_scale_;
   runtime_params_shadow_.geometry = geometry_;
   runtime_params_buffer_.writeFromNonRT(runtime_params_shadow_);
   return true;
@@ -226,6 +273,113 @@ void SentryChassisController::ApplyRuntimeParamsInUpdate(
   if (applied_base_frame_id_ != runtime_params.base_frame_id)
   {
     applied_base_frame_id_ = runtime_params.base_frame_id;
+  }
+}
+
+void SentryChassisController::ApplyAccelerationLimits(
+    const Kinematics::ChassisTwist& input, double dt,
+    const RuntimeParams& runtime_params, Kinematics::ChassisTwist* output)
+{
+  if (output == nullptr)
+  {
+    return;
+  }
+  *output = input;
+  if (!runtime_params.enable_acceleration_limits || dt <= MIN_VALID_DT)
+  {
+    return;
+  }
+  if (!has_last_limited_command_)
+  {
+    last_limited_command_ = input;
+    has_last_limited_command_ = true;
+    return;
+  }
+
+  const double max_linear_delta = runtime_params.max_linear_acceleration * dt;
+  const double max_angular_delta = runtime_params.max_angular_acceleration * dt;
+  const Eigen::Vector2d previous_linear(last_limited_command_.vx,
+                                        last_limited_command_.vy);
+  const Eigen::Vector2d target_linear(input.vx, input.vy);
+  Eigen::Vector2d delta_linear = target_linear - previous_linear;
+  const double delta_linear_norm = delta_linear.norm();
+  if (delta_linear_norm > max_linear_delta && delta_linear_norm > MIN_VALID_DT)
+  {
+    delta_linear *= max_linear_delta / delta_linear_norm;
+  }
+
+  output->vx = previous_linear.x() + delta_linear.x();
+  output->vy = previous_linear.y() + delta_linear.y();
+  const double delta_wz = input.wz - last_limited_command_.wz;
+  output->wz = last_limited_command_.wz +
+               std::max(-max_angular_delta, std::min(max_angular_delta, delta_wz));
+  last_limited_command_ = *output;
+}
+
+void SentryChassisController::ApplyPowerLimiting(
+    const RuntimeParams& runtime_params,
+    const std::array<double, WHEEL_COUNT>& signed_wheel_velocities,
+    std::array<double, WHEEL_COUNT>* signed_wheel_efforts) const
+{
+  if (signed_wheel_efforts == nullptr || !runtime_params.enable_power_limit)
+  {
+    return;
+  }
+
+  double output_power = 0.0;
+  double effort_square_sum = 0.0;
+  double velocity_square_sum = 0.0;
+  for (std::size_t index = 0; index < WHEEL_COUNT; ++index)
+  {
+    const double effort = signed_wheel_efforts->at(index);
+    const double velocity = signed_wheel_velocities[index];
+    output_power += std::fabs(effort * velocity);
+    effort_square_sum += effort * effort;
+    velocity_square_sum += velocity * velocity;
+  }
+
+  const double QUADRATIC_EFFORT_TERM =
+      runtime_params.power_loss_k1 * effort_square_sum;
+  const double VELOCITY_LOSS_TERM =
+      runtime_params.power_loss_k2 * velocity_square_sum;
+  const double PREDICTED_INPUT_POWER =
+      output_power + QUADRATIC_EFFORT_TERM + VELOCITY_LOSS_TERM;
+  if (PREDICTED_INPUT_POWER <= runtime_params.max_power)
+  {
+    return;
+  }
+
+  const double RHS = runtime_params.max_power - VELOCITY_LOSS_TERM;
+  double scale = runtime_params.min_power_scale;
+  if (RHS > 0.0)
+  {
+    if (QUADRATIC_EFFORT_TERM > MIN_VALID_DT)
+    {
+      // Solve QUADRATIC_EFFORT_TERM * s^2 + output_power * s = RHS for s in (0, 1].
+      const double DISCRIMINANT =
+          output_power * output_power + 4.0 * QUADRATIC_EFFORT_TERM * RHS;
+      if (DISCRIMINANT > 0.0)
+      {
+        scale = (-output_power + std::sqrt(DISCRIMINANT)) /
+                (2.0 * QUADRATIC_EFFORT_TERM);
+      }
+    }
+    else if (output_power > MIN_VALID_DT)
+    {
+      scale = RHS / output_power;
+    }
+  }
+  scale = std::max(runtime_params.min_power_scale, std::min(1.0, scale));
+  for (auto& effort : *signed_wheel_efforts)
+  {
+    effort *= scale;
+  }
+
+  if (runtime_params.enable_power_limit_logging)
+  {
+    ROS_WARN_THROTTLE(1.0,
+                      "Power limit active: predicted=%.3fW, max=%.3fW, scale=%.3f.",
+                      PREDICTED_INPUT_POWER, runtime_params.max_power, scale);
   }
 }
 
@@ -292,6 +446,8 @@ void SentryChassisController::starting(const ros::Time& time)
   }
 
   odom_state_ = OdomState();
+  last_limited_command_ = Kinematics::ChassisTwist();
+  has_last_limited_command_ = false;
   controller_start_time_ = time;
   last_command_timed_out_ = true;
 }
@@ -347,11 +503,20 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
       command_twist_base = Kinematics::ChassisTwist();
     }
   }
+  else
+  {
+    has_last_limited_command_ = false;
+  }
+
+  Kinematics::ChassisTwist limited_command_twist_base = command_twist_base;
+  ApplyAccelerationLimits(command_twist_base, DT, *runtime_params,
+                          &limited_command_twist_base);
 
   const Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>
       COMMAND_COMPENSATION_BASE(command_compensation_matrix_.data());
-  const Eigen::Vector3d COMMAND_INPUT_BASE(command_twist_base.vx, command_twist_base.vy,
-                                           command_twist_base.wz);
+  const Eigen::Vector3d COMMAND_INPUT_BASE(limited_command_twist_base.vx,
+                                           limited_command_twist_base.vy,
+                                           limited_command_twist_base.wz);
   Eigen::Matrix3d command_compensation_effective = COMMAND_COMPENSATION_BASE;
   Eigen::Vector3d command_effective =
       command_compensation_effective * COMMAND_INPUT_BASE;
@@ -503,12 +668,15 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   // hard gating. A single module lagging should not stall all wheel targets.
   const double global_alignment = 1.0;
 
+  std::array<double, WHEEL_COUNT> signed_wheel_velocities{};
+  std::array<double, WHEEL_COUNT> signed_wheel_efforts{};
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
   {
     if (wheel_pid_reset_flags[i])
     {
       wheel_pids_[i].reset();
-      wheel_joints_[i].setCommand(0.0);
+      signed_wheel_velocities[i] = 0.0;
+      signed_wheel_efforts[i] = 0.0;
       continue;
     }
 
@@ -522,7 +690,19 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     const double LIMITED_SIGNED_WHEEL_EFFORT =
         std::max(-runtime_params->wheel_effort_limit,
                  std::min(runtime_params->wheel_effort_limit, SIGNED_WHEEL_EFFORT));
-    wheel_joints_[i].setCommand(ROLLING_SIGN * LIMITED_SIGNED_WHEEL_EFFORT);
+    signed_wheel_velocities[i] = SIGNED_WHEEL_VELOCITY;
+    signed_wheel_efforts[i] = LIMITED_SIGNED_WHEEL_EFFORT;
+  }
+  ApplyPowerLimiting(*runtime_params, signed_wheel_velocities, &signed_wheel_efforts);
+  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
+  {
+    if (wheel_pid_reset_flags[i])
+    {
+      wheel_joints_[i].setCommand(0.0);
+      continue;
+    }
+    const double ROLLING_SIGN = static_cast<double>(wheel_rolling_signs_[i]);
+    wheel_joints_[i].setCommand(ROLLING_SIGN * signed_wheel_efforts[i]);
   }
 
   Kinematics::WheelFeedback feedback;
@@ -597,6 +777,8 @@ void SentryChassisController::stopping(const ros::Time& time)
     pid.reset();
   }
   odom_state_ = OdomState();
+  last_limited_command_ = Kinematics::ChassisTwist();
+  has_last_limited_command_ = false;
   controller_start_time_ = ros::Time(0);
   last_command_timed_out_ = true;
 }

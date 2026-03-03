@@ -51,6 +51,15 @@
 - `odom_integrate_on_timeout`：指令超时后是否继续积分里程计，默认 `false`（避免启动/空闲漂移）
 - `publish_tf`：是否发布 `odom -> base_link` TF，默认 `true`
 - `wheel_effort_limit`：轮速 PID 输出绝对值限幅，默认 `12.0`
+- `enable_acceleration_limits`：是否启用底盘加速度限制，默认 `false`
+- `max_linear_acceleration`：底盘平面线加速度上限（m/s^2），默认 `3.0`
+- `max_angular_acceleration`：底盘角加速度上限（rad/s^2），默认 `5.0`
+- `enable_power_limit`：是否启用轮端功率限制，默认 `false`
+- `enable_power_limit_logging`：是否输出功率限制日志，默认 `false`
+- `max_power`：轮端功率模型上限（W），默认 `360.0`
+- `power_loss_k1`：功率模型中 `effort^2` 损耗项系数，默认 `0.001`
+- `power_loss_k2`：功率模型中 `velocity^2` 损耗项系数，默认 `0.0001`
+- `min_power_scale`：功率限制缩放下界，默认 `0.3`
 - `command_compensation_matrix`：3x3 行优先线性补偿矩阵（`[vx, vy, wz] -> [vx', vy', wz']`），默认单位阵
 - 控制器逆解层不再包含离散特判补偿（如 pure strafe/reverse/opposite-sign 分支）；行为修正统一通过 `command_compensation_matrix` 与底层 PID/机械参数完成
 - `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`

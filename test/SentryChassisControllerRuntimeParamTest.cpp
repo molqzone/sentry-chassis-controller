@@ -99,6 +99,53 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     controller->reverse_ccw_steer_priority_error_ = steer_priority_error;
   }
 
+  static void SetEnableAccelerationLimits(SentryChassisController* controller, bool enabled)
+  {
+    controller->enable_acceleration_limits_ = enabled;
+  }
+
+  static void SetMaxLinearAcceleration(SentryChassisController* controller,
+                                       double max_linear_acceleration)
+  {
+    controller->max_linear_acceleration_ = max_linear_acceleration;
+  }
+
+  static void SetMaxAngularAcceleration(SentryChassisController* controller,
+                                        double max_angular_acceleration)
+  {
+    controller->max_angular_acceleration_ = max_angular_acceleration;
+  }
+
+  static void SetEnablePowerLimit(SentryChassisController* controller, bool enabled)
+  {
+    controller->enable_power_limit_ = enabled;
+  }
+
+  static void SetEnablePowerLimitLogging(SentryChassisController* controller, bool enabled)
+  {
+    controller->enable_power_limit_logging_ = enabled;
+  }
+
+  static void SetMaxPower(SentryChassisController* controller, double max_power)
+  {
+    controller->max_power_ = max_power;
+  }
+
+  static void SetPowerLossK1(SentryChassisController* controller, double power_loss_k1)
+  {
+    controller->power_loss_k1_ = power_loss_k1;
+  }
+
+  static void SetPowerLossK2(SentryChassisController* controller, double power_loss_k2)
+  {
+    controller->power_loss_k2_ = power_loss_k2;
+  }
+
+  static void SetMinPowerScale(SentryChassisController* controller, double min_power_scale)
+  {
+    controller->min_power_scale_ = min_power_scale;
+  }
+
   static void SetWheelRadius(SentryChassisController* controller, double wheel_radius)
   {
     controller->geometry_.wheel_radius = wheel_radius;
@@ -166,6 +213,41 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     runtime_params.base_frame_id = base_frame_id;
     controller->ApplyRuntimeParamsInUpdate(runtime_params);
   }
+
+  static Kinematics::ChassisTwist ApplyAccelerationLimits(
+      SentryChassisController* controller, const Kinematics::ChassisTwist& input, double dt,
+      bool enable, double max_linear_acceleration, double max_angular_acceleration)
+  {
+    SentryChassisController::RuntimeParams runtime_params;
+    runtime_params.enable_acceleration_limits = enable;
+    runtime_params.max_linear_acceleration = max_linear_acceleration;
+    runtime_params.max_angular_acceleration = max_angular_acceleration;
+    Kinematics::ChassisTwist output;
+    controller->ApplyAccelerationLimits(input, dt, runtime_params, &output);
+    return output;
+  }
+
+  static void ResetAccelerationLimiterState(SentryChassisController* controller)
+  {
+    controller->last_limited_command_ = Kinematics::ChassisTwist();
+    controller->has_last_limited_command_ = false;
+  }
+
+  static std::array<double, 4> ApplyPowerLimiting(
+      SentryChassisController* controller, const std::array<double, 4>& signed_wheel_velocities,
+      const std::array<double, 4>& input_signed_wheel_efforts, bool enable_power_limit,
+      double max_power, double power_loss_k1, double power_loss_k2, double min_power_scale)
+  {
+    SentryChassisController::RuntimeParams runtime_params;
+    runtime_params.enable_power_limit = enable_power_limit;
+    runtime_params.max_power = max_power;
+    runtime_params.power_loss_k1 = power_loss_k1;
+    runtime_params.power_loss_k2 = power_loss_k2;
+    runtime_params.min_power_scale = min_power_scale;
+    std::array<double, 4> efforts = input_signed_wheel_efforts;
+    controller->ApplyPowerLimiting(runtime_params, signed_wheel_velocities, &efforts);
+    return efforts;
+  }
 };
 
 TEST(SentryChassisControllerRuntimeParams,
@@ -187,6 +269,19 @@ TEST(SentryChassisControllerRuntimeParams,
                                                                               -0.1);
   SentryChassisControllerRuntimeParamsTestAccessor::SetReverseCcwSteerPriorityError(
       &controller, -0.2);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetEnableAccelerationLimits(
+      &controller, true);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetMaxLinearAcceleration(&controller,
+                                                                              0.0);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetMaxAngularAcceleration(&controller,
+                                                                               -5.0);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetEnablePowerLimit(&controller, true);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetEnablePowerLimitLogging(&controller,
+                                                                                true);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetMaxPower(&controller, 0.0);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetPowerLossK1(&controller, -0.1);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetPowerLossK2(&controller, -0.2);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetMinPowerScale(&controller, 1.2);
   SentryChassisControllerRuntimeParamsTestAccessor::SetWheelRadius(&controller, 0.0);
 
   ASSERT_TRUE(
@@ -203,6 +298,15 @@ TEST(SentryChassisControllerRuntimeParams,
   EXPECT_DOUBLE_EQ(1.0, runtime_params->reverse_ccw_wz_gain);
   EXPECT_DOUBLE_EQ(0.0, runtime_params->reverse_ccw_vy_threshold);
   EXPECT_DOUBLE_EQ(0.0, runtime_params->reverse_ccw_steer_priority_error);
+  EXPECT_TRUE(runtime_params->enable_acceleration_limits);
+  EXPECT_DOUBLE_EQ(3.0, runtime_params->max_linear_acceleration);
+  EXPECT_DOUBLE_EQ(5.0, runtime_params->max_angular_acceleration);
+  EXPECT_TRUE(runtime_params->enable_power_limit);
+  EXPECT_TRUE(runtime_params->enable_power_limit_logging);
+  EXPECT_DOUBLE_EQ(360.0, runtime_params->max_power);
+  EXPECT_DOUBLE_EQ(0.001, runtime_params->power_loss_k1);
+  EXPECT_DOUBLE_EQ(0.0001, runtime_params->power_loss_k2);
+  EXPECT_DOUBLE_EQ(1.0, runtime_params->min_power_scale);
   EXPECT_GE(runtime_params->geometry.wheel_radius, K_MIN_WHEEL_RADIUS);
   EXPECT_EQ("base_link", runtime_params->command_frame_id);
 }
@@ -281,6 +385,50 @@ TEST(SentryChassisControllerRuntimeParams,
   EXPECT_EQ("base_new",
             SentryChassisControllerRuntimeParamsTestAccessor::GetAppliedBaseFrameId(
                 &controller));
+}
+
+TEST(SentryChassisControllerRuntimeParams, ApplyAccelerationLimitsBoundsDeltaPerCycle)
+{
+  SentryChassisController controller;
+  SentryChassisControllerRuntimeParamsTestAccessor::ResetAccelerationLimiterState(
+      &controller);
+
+  Kinematics::ChassisTwist first_target;
+  first_target.vx = 1.0;
+  first_target.vy = 0.0;
+  first_target.wz = 1.0;
+  const auto first_output =
+      SentryChassisControllerRuntimeParamsTestAccessor::ApplyAccelerationLimits(
+          &controller, first_target, 0.1, true, 1.0, 2.0);
+  EXPECT_DOUBLE_EQ(1.0, first_output.vx);
+  EXPECT_DOUBLE_EQ(0.0, first_output.vy);
+  EXPECT_DOUBLE_EQ(1.0, first_output.wz);
+
+  Kinematics::ChassisTwist second_target;
+  second_target.vx = 2.0;
+  second_target.vy = 0.0;
+  second_target.wz = 2.0;
+  const auto second_output =
+      SentryChassisControllerRuntimeParamsTestAccessor::ApplyAccelerationLimits(
+          &controller, second_target, 0.1, true, 1.0, 2.0);
+  EXPECT_NEAR(1.1, second_output.vx, 1e-9);
+  EXPECT_NEAR(0.0, second_output.vy, 1e-9);
+  EXPECT_NEAR(1.2, second_output.wz, 1e-9);
+}
+
+TEST(SentryChassisControllerRuntimeParams, ApplyPowerLimitingScalesEffortsWhenOverBudget)
+{
+  SentryChassisController controller;
+  const std::array<double, 4> wheel_velocities = {{10.0, 10.0, 10.0, 10.0}};
+  const std::array<double, 4> wheel_efforts = {{2.0, 2.0, 2.0, 2.0}};
+  const auto limited_efforts =
+      SentryChassisControllerRuntimeParamsTestAccessor::ApplyPowerLimiting(
+          &controller, wheel_velocities, wheel_efforts, true,
+          40.0, 0.0, 0.0, 0.3);
+  EXPECT_NEAR(1.0, limited_efforts[0], 1e-9);
+  EXPECT_NEAR(1.0, limited_efforts[1], 1e-9);
+  EXPECT_NEAR(1.0, limited_efforts[2], 1e-9);
+  EXPECT_NEAR(1.0, limited_efforts[3], 1e-9);
 }
 
 }  // namespace sentry_chassis_controller

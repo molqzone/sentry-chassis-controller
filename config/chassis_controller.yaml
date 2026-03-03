@@ -19,6 +19,15 @@ sentry_chassis_controller:
   reverse_ccw_wz_gain: 1.00
   reverse_ccw_vy_threshold: 0.03
   reverse_ccw_steer_priority_error: 0.60
+  enable_acceleration_limits: false
+  max_linear_acceleration: 3.0
+  max_angular_acceleration: 5.0
+  enable_power_limit: false
+  enable_power_limit_logging: false
+  max_power: 360.0
+  power_loss_k1: 0.001
+  power_loss_k2: 0.0001
+  min_power_scale: 0.3
   steer_joints:
   - left_front_pivot_joint
   - right_front_pivot_joint
