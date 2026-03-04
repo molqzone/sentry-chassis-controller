@@ -26,6 +26,7 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   InitRealtimeState();
   InitRosInterfaces(nh);
   InitTfResources();
+  InitCommandTransformCacheTimer(nh);
   if (!InitRuntimeDynamicReconfigure(nh))
   {
     return false;
@@ -299,6 +300,9 @@ void SentryChassisController::InitRealtimeState()
   command.stamp = ros::Time(0);
   command.valid = false;
   command_buffer_.initRT(command);
+  CommandTransformCache command_transform_cache;
+  command_transform_cache.valid = false;
+  command_transform_buffer_.initRT(command_transform_cache);
   odom_state_ = OdomState();
   last_limited_command_ = Kinematics::ChassisTwist();
   has_last_limited_command_ = false;
@@ -335,6 +339,15 @@ void SentryChassisController::InitTfResources()
     tf_listener_.reset();
     tf_buffer_.reset();
   }
+}
+
+void SentryChassisController::InitCommandTransformCacheTimer(ros::NodeHandle& nh)
+{
+  command_transform_cache_timer_.stop();
+  command_transform_cache_timer_ = nh.createTimer(
+      ros::Duration(COMMAND_TRANSFORM_CACHE_UPDATE_SEC),
+      &SentryChassisController::RefreshCommandTransformCache, this);
+  RefreshCommandTransformCache(ros::TimerEvent());
 }
 
 bool SentryChassisController::InitRuntimeDynamicReconfigure(ros::NodeHandle& nh)

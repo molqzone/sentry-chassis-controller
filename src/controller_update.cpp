@@ -236,7 +236,113 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   runtime_params_shadow_.min_power_scale = min_power_scale_;
   runtime_params_shadow_.geometry = geometry_;
   runtime_params_buffer_.writeFromNonRT(runtime_params_shadow_);
+  InvalidateCommandTransformCache();
+  RefreshCommandTransformCache(ros::TimerEvent());
   return true;
+}
+
+void SentryChassisController::InvalidateCommandTransformCache()
+{
+  CommandTransformCache cache;
+  cache.valid = false;
+  command_transform_buffer_.writeFromNonRT(cache);
+}
+
+void SentryChassisController::RefreshCommandTransformCache(
+    const ros::TimerEvent& event)
+{
+  (void)event;
+  const RuntimeParams* runtime_params = runtime_params_buffer_.readFromRT();
+  if (runtime_params == nullptr)
+  {
+    InvalidateCommandTransformCache();
+    return;
+  }
+
+  if (runtime_params->command_velocity_mode != CommandVelocityMode::GLOBAL)
+  {
+    InvalidateCommandTransformCache();
+    return;
+  }
+
+  CommandTransformCache cache;
+  cache.valid = false;
+  cache.stamp = ros::Time(0);
+  if (runtime_params->command_frame_id == runtime_params->base_frame_id)
+  {
+    cache.valid = true;
+    cache.stamp = ros::Time::now();
+    command_transform_buffer_.writeFromNonRT(cache);
+    return;
+  }
+
+  if (!tf_buffer_)
+  {
+    ROS_WARN_THROTTLE(
+        1.0,
+        "Global command mode requires TF listener, but tf_buffer is not initialized.");
+    InvalidateCommandTransformCache();
+    return;
+  }
+
+  std::string transform_error;
+  const bool TRANSFORM_READY = tf_buffer_->canTransform(
+      runtime_params->base_frame_id, runtime_params->command_frame_id,
+      ros::Time(0), ros::Duration(0.0), &transform_error);
+  if (!TRANSFORM_READY)
+  {
+    ROS_WARN_THROTTLE(1.0,
+                      "Failed to refresh cmd_vel transform from '%s' to '%s': %s",
+                      runtime_params->command_frame_id.c_str(),
+                      runtime_params->base_frame_id.c_str(),
+                      transform_error.c_str());
+    InvalidateCommandTransformCache();
+    return;
+  }
+
+  geometry_msgs::TransformStamped command_to_base_transform;
+  try
+  {
+    command_to_base_transform = tf_buffer_->lookupTransform(
+        runtime_params->base_frame_id, runtime_params->command_frame_id,
+        ros::Time(0), ros::Duration(0.0));
+  }
+  catch (const tf2::TransformException& exception)
+  {
+    ROS_WARN_THROTTLE(1.0,
+                      "Failed to refresh cmd_vel transform from '%s' to '%s': %s",
+                      runtime_params->command_frame_id.c_str(),
+                      runtime_params->base_frame_id.c_str(),
+                      exception.what());
+    InvalidateCommandTransformCache();
+    return;
+  }
+
+  Eigen::Matrix3d source_to_target_rotation;
+  if (!controller_math::BuildRotationFromQuaternion(
+          command_to_base_transform.transform.rotation, MIN_QUATERNION_NORM,
+          &source_to_target_rotation))
+  {
+    ROS_WARN_THROTTLE(
+        1.0,
+        "Failed to refresh cmd_vel transform from '%s' to '%s': invalid quaternion.",
+        runtime_params->command_frame_id.c_str(),
+        runtime_params->base_frame_id.c_str());
+    InvalidateCommandTransformCache();
+    return;
+  }
+
+  for (int row = 0; row < 3; ++row)
+  {
+    for (int col = 0; col < 3; ++col)
+    {
+      cache.rotation_matrix_row_major[static_cast<std::size_t>(row * 3 + col)] =
+          source_to_target_rotation(row, col);
+    }
+  }
+  cache.valid = true;
+  cache.stamp = command_to_base_transform.header.stamp;
+  command_transform_buffer_.writeFromNonRT(cache);
 }
 
 void SentryChassisController::ApplyRuntimeParamsInUpdate(
@@ -388,6 +494,7 @@ bool SentryChassisController::ResolveCommandInBaseFrame(const CommandData& comma
                                                         const RuntimeParams& runtime_params,
                                                         Kinematics::ChassisTwist* base_twist)
 {
+  (void)time;
   if (base_twist == nullptr)
   {
     return false;
@@ -404,83 +511,43 @@ bool SentryChassisController::ResolveCommandInBaseFrame(const CommandData& comma
     return true;
   }
 
-  if (!tf_buffer_)
+  const CommandTransformCache* command_transform = command_transform_buffer_.readFromRT();
+  if (command_transform == nullptr || !command_transform->valid)
   {
     ROS_WARN_THROTTLE(
         1.0,
-        "Global command mode requires TF listener, but tf_buffer is not initialized.");
+        "Global command mode transform cache is not ready. "
+        "Failed to transform cmd_vel from '%s' to '%s'.",
+        runtime_params.command_frame_id.c_str(), runtime_params.base_frame_id.c_str());
     return false;
   }
 
-  geometry_msgs::TransformStamped command_to_base_transform;
-  try
+  const Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>
+      SOURCE_TO_TARGET_ROTATION(command_transform->rotation_matrix_row_major.data());
+  const Eigen::Vector3d LINEAR_INPUT(source_twist.vx, source_twist.vy, 0.0);
+  const Eigen::Vector3d ANGULAR_INPUT(0.0, 0.0, source_twist.wz);
+  const Eigen::Vector3d LINEAR_OUTPUT = SOURCE_TO_TARGET_ROTATION * LINEAR_INPUT;
+  const Eigen::Vector3d ANGULAR_OUTPUT = SOURCE_TO_TARGET_ROTATION * ANGULAR_INPUT;
+  base_twist->vx = LINEAR_OUTPUT.x();
+  base_twist->vy = LINEAR_OUTPUT.y();
+  base_twist->wz = ANGULAR_OUTPUT.z();
+  return true;
+}
+
+bool SentryChassisController::PrepareCommandForControl(
+    const CommandData& command, const ros::Time& time, double dt,
+    const RuntimeParams& runtime_params,
+    Kinematics::ChassisTwist* limited_command_twist_base, bool* timeout)
+{
+  if (limited_command_twist_base == nullptr || timeout == nullptr)
   {
-    command_to_base_transform = tf_buffer_->lookupTransform(
-        runtime_params.base_frame_id, runtime_params.command_frame_id, time,
-        ros::Duration(TF_LOOKUP_TIMEOUT_SEC));
-  }
-  catch (const tf2::TransformException& exception)
-  {
-    ROS_WARN_THROTTLE(1.0,
-                      "Failed to transform cmd_vel from '%s' to '%s': %s",
-                      runtime_params.command_frame_id.c_str(),
-                      runtime_params.base_frame_id.c_str(),
-                      exception.what());
     return false;
   }
 
-  return TransformTwistWithTransform(source_twist, command_to_base_transform, base_twist);
-}
-
-void SentryChassisController::starting(const ros::Time& time)
-{
-  SetAllCommands(&steer_joints_, 0.0);
-  SetAllCommands(&wheel_joints_, 0.0);
-  for (auto& pid : steer_pids_)
-  {
-    pid.reset();
-  }
-  for (auto& pid : wheel_pids_)
-  {
-    pid.reset();
-  }
-
-  odom_state_ = OdomState();
-  last_limited_command_ = Kinematics::ChassisTwist();
-  has_last_limited_command_ = false;
-  controller_start_time_ = time;
-  last_command_timed_out_ = true;
-}
-
-void SentryChassisController::update(const ros::Time& time, const ros::Duration& period)
-{
-  const double DT = period.toSec();
-  if (DT <= MIN_VALID_DT)
-  {
-    ROS_WARN_THROTTLE(1.0, "Skip update due to non-positive period.");
-    return;
-  }
-  const RuntimeParams* runtime_params = runtime_params_buffer_.readFromRT();
-  if (runtime_params == nullptr)
-  {
-    ROS_WARN_THROTTLE(1.0, "Runtime parameter snapshot is not initialized yet.");
-    return;
-  }
-  ApplyRuntimeParamsInUpdate(*runtime_params);
-
-  const CommandData* command = command_buffer_.readFromRT();
-  if (command == nullptr)
-  {
-    ROS_WARN_THROTTLE(1.0, "Command buffer is not initialized yet.");
-    return;
-  }
-
-  const bool COMMAND_FROM_CURRENT_SESSION =
-      command->stamp >= controller_start_time_;
-  const bool COMMAND_VALID_FOR_UPDATE =
-      command->valid && COMMAND_FROM_CURRENT_SESSION;
-  const bool TIMEOUT = IsCommandTimedOut(
-      COMMAND_VALID_FOR_UPDATE, command->stamp, time, runtime_params->cmd_vel_timeout);
+  const bool COMMAND_FROM_CURRENT_SESSION = command.stamp >= controller_start_time_;
+  const bool COMMAND_VALID_FOR_UPDATE = command.valid && COMMAND_FROM_CURRENT_SESSION;
+  const bool TIMEOUT = IsCommandTimedOut(COMMAND_VALID_FOR_UPDATE, command.stamp, time,
+                                         runtime_params.cmd_vel_timeout);
   if (TIMEOUT && !last_command_timed_out_)
   {
     for (auto& pid : wheel_pids_)
@@ -490,14 +557,11 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   }
   last_command_timed_out_ = TIMEOUT;
 
-  // Resolve cmd_vel into base frame before IK:
-  // - base_link mode: direct use
-  // - global mode: transform command_frame -> base_frame via TF.
   Kinematics::ChassisTwist command_twist_base{};
   if (!TIMEOUT)
   {
     const bool COMMAND_RESOLVED =
-        ResolveCommandInBaseFrame(*command, time, *runtime_params, &command_twist_base);
+        ResolveCommandInBaseFrame(command, time, runtime_params, &command_twist_base);
     if (!COMMAND_RESOLVED)
     {
       command_twist_base = Kinematics::ChassisTwist();
@@ -508,10 +572,17 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     has_last_limited_command_ = false;
   }
 
-  Kinematics::ChassisTwist limited_command_twist_base = command_twist_base;
-  ApplyAccelerationLimits(command_twist_base, DT, *runtime_params,
-                          &limited_command_twist_base);
+  *limited_command_twist_base = command_twist_base;
+  ApplyAccelerationLimits(command_twist_base, dt, runtime_params,
+                          limited_command_twist_base);
+  *timeout = TIMEOUT;
+  return true;
+}
 
+void SentryChassisController::ComputeAndApplyWheelControl(
+    const Kinematics::ChassisTwist& limited_command_twist_base,
+    const ros::Duration& period, const RuntimeParams& runtime_params)
+{
   const Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>
       COMMAND_COMPENSATION_BASE(command_compensation_matrix_.data());
   const Eigen::Vector3d COMMAND_INPUT_BASE(limited_command_twist_base.vx,
@@ -521,9 +592,9 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   Eigen::Vector3d command_effective =
       command_compensation_effective * COMMAND_INPUT_BASE;
   const controller_math::ReverseCompensationParams reverse_compensation_params{
-      runtime_params->reverse_ccw_vy_threshold,
-      runtime_params->reverse_ccw_vx_scale,
-      runtime_params->reverse_ccw_wz_gain,
+      runtime_params.reverse_ccw_vy_threshold,
+      runtime_params.reverse_ccw_vx_scale,
+      runtime_params.reverse_ccw_wz_gain,
       ZERO_CMD_EPS,
       REVERSE_STRAIGHT_VX_BOOST};
   controller_math::ApplyNonLinearReverseCompensation(
@@ -539,7 +610,7 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   const bool HAS_TRANSLATION_COMMAND =
       std::fabs(VX) >= ZERO_CMD_EPS || std::fabs(VY) >= ZERO_CMD_EPS;
   const bool REVERSE_CCW_MODE =
-      VX < -ZERO_CMD_EPS && std::fabs(VY) <= runtime_params->reverse_ccw_vy_threshold &&
+      VX < -ZERO_CMD_EPS && std::fabs(VY) <= runtime_params.reverse_ccw_vy_threshold &&
       WZ > ZERO_CMD_EPS;
   const double HALF_WHEEL_BASE = applied_geometry_.wheel_base * 0.5;
   const double HALF_TRACK_WIDTH = applied_geometry_.track_width * 0.5;
@@ -623,7 +694,7 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
       bool has_module_target = SOLVE_MODULE_TARGET(command_compensation_effective,
                                                    &steer_error, &wheel_target);
       if (has_module_target && REVERSE_CCW_MODE &&
-          std::fabs(steer_error) > runtime_params->reverse_ccw_steer_priority_error)
+          std::fabs(steer_error) > runtime_params.reverse_ccw_steer_priority_error)
       {
         // Steering-priority mode: when reverse-CCW command arrives while steering
         // still has large error, temporarily solve wheel target without the reverse
@@ -664,10 +735,6 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     steer_joints_[i].setCommand(STEER_EFFORT);
   }
 
-  // Use per-wheel alignment scaling for yaw commands while avoiding full-vehicle
-  // hard gating. A single module lagging should not stall all wheel targets.
-  const double global_alignment = 1.0;
-
   std::array<double, WHEEL_COUNT> signed_wheel_velocities{};
   std::array<double, WHEEL_COUNT> signed_wheel_efforts{};
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
@@ -684,16 +751,16 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     // Wheel loop closes on velocity error using IK-computed targets.
     const double ROLLING_SIGN = static_cast<double>(wheel_rolling_signs_[i]);
     const double SIGNED_WHEEL_VELOCITY = ROLLING_SIGN * wheel_joints_[i].getVelocity();
-    const double WHEEL_TARGET = wheel_target_values[i] * alignments[i] * global_alignment;
+    const double WHEEL_TARGET = wheel_target_values[i] * alignments[i];
     const double WHEEL_ERROR = WHEEL_TARGET - SIGNED_WHEEL_VELOCITY;
     const double SIGNED_WHEEL_EFFORT = wheel_pids_[i].computeCommand(WHEEL_ERROR, period);
     const double LIMITED_SIGNED_WHEEL_EFFORT =
-        std::max(-runtime_params->wheel_effort_limit,
-                 std::min(runtime_params->wheel_effort_limit, SIGNED_WHEEL_EFFORT));
+        std::max(-runtime_params.wheel_effort_limit,
+                 std::min(runtime_params.wheel_effort_limit, SIGNED_WHEEL_EFFORT));
     signed_wheel_velocities[i] = SIGNED_WHEEL_VELOCITY;
     signed_wheel_efforts[i] = LIMITED_SIGNED_WHEEL_EFFORT;
   }
-  ApplyPowerLimiting(*runtime_params, signed_wheel_velocities, &signed_wheel_efforts);
+  ApplyPowerLimiting(runtime_params, signed_wheel_velocities, &signed_wheel_efforts);
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
   {
     if (wheel_pid_reset_flags[i])
@@ -704,7 +771,12 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     const double ROLLING_SIGN = static_cast<double>(wheel_rolling_signs_[i]);
     wheel_joints_[i].setCommand(ROLLING_SIGN * signed_wheel_efforts[i]);
   }
+}
 
+Kinematics::ChassisTwist SentryChassisController::ComputeAndIntegrateOdometry(
+    const ros::Time& time, double dt, bool timeout,
+    const RuntimeParams& runtime_params)
+{
   Kinematics::WheelFeedback feedback;
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
   {
@@ -724,7 +796,7 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   }
   else
   {
-    if (TIMEOUT && !runtime_params->odom_integrate_on_timeout)
+    if (timeout && !runtime_params.odom_integrate_on_timeout)
     {
       odom_twist = Kinematics::ChassisTwist();
     }
@@ -732,9 +804,9 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
     {
       const double STARTUP_AGE = (time - controller_start_time_).toSec();
       const bool IN_STARTUP_HOLD =
-          STARTUP_AGE >= 0.0 && STARTUP_AGE < runtime_params->odom_startup_hold_sec;
+          STARTUP_AGE >= 0.0 && STARTUP_AGE < runtime_params.odom_startup_hold_sec;
       const bool SHOULD_SUPPRESS_STARTUP_DRIFT =
-          runtime_params->odom_integrate_on_timeout && TIMEOUT && IN_STARTUP_HOLD;
+          runtime_params.odom_integrate_on_timeout && timeout && IN_STARTUP_HOLD;
 
       if (SHOULD_SUPPRESS_STARTUP_DRIFT)
       {
@@ -742,9 +814,9 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
         ROS_WARN_THROTTLE(
             1.0,
             "Suppress odometry integration during startup hold window (%.3fs remaining).",
-            runtime_params->odom_startup_hold_sec - STARTUP_AGE);
+            runtime_params.odom_startup_hold_sec - STARTUP_AGE);
       }
-      else if (!IsOdomTwistAcceptable(odom_twist, *runtime_params))
+      else if (!IsOdomTwistAcceptable(odom_twist, runtime_params))
       {
         ROS_WARN_THROTTLE(
             1.0,
@@ -755,17 +827,15 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
       }
       else
       {
-        odom_state_ = IntegrateOdom(odom_state_, odom_twist, DT);
+        odom_state_ = IntegrateOdom(odom_state_, odom_twist, dt);
       }
     }
   }
-
-  PublishOdometry(time, odom_twist, *runtime_params);
+  return odom_twist;
 }
 
-void SentryChassisController::stopping(const ros::Time& time)
+void SentryChassisController::ResetControllerOutputsAndPids()
 {
-  (void)time;
   SetAllCommands(&steer_joints_, 0.0);
   SetAllCommands(&wheel_joints_, 0.0);
   for (auto& pid : steer_pids_)
@@ -776,11 +846,67 @@ void SentryChassisController::stopping(const ros::Time& time)
   {
     pid.reset();
   }
+}
+
+void SentryChassisController::ResetControllerTrackingState(const ros::Time& start_time)
+{
   odom_state_ = OdomState();
   last_limited_command_ = Kinematics::ChassisTwist();
   has_last_limited_command_ = false;
-  controller_start_time_ = ros::Time(0);
+  controller_start_time_ = start_time;
   last_command_timed_out_ = true;
+}
+
+void SentryChassisController::starting(const ros::Time& time)
+{
+  ResetControllerOutputsAndPids();
+  ResetControllerTrackingState(time);
+}
+
+void SentryChassisController::update(const ros::Time& time, const ros::Duration& period)
+{
+  const double DT = period.toSec();
+  if (DT <= MIN_VALID_DT)
+  {
+    ROS_WARN_THROTTLE(1.0, "Skip update due to non-positive period.");
+    return;
+  }
+
+  const RuntimeParams* runtime_params = runtime_params_buffer_.readFromRT();
+  if (runtime_params == nullptr)
+  {
+    ROS_WARN_THROTTLE(1.0, "Runtime parameter snapshot is not initialized yet.");
+    return;
+  }
+  ApplyRuntimeParamsInUpdate(*runtime_params);
+
+  const CommandData* command = command_buffer_.readFromRT();
+  if (command == nullptr)
+  {
+    ROS_WARN_THROTTLE(1.0, "Command buffer is not initialized yet.");
+    return;
+  }
+
+  Kinematics::ChassisTwist limited_command_twist_base{};
+  bool timeout = false;
+  if (!PrepareCommandForControl(*command, time, DT, *runtime_params,
+                                &limited_command_twist_base, &timeout))
+  {
+    ROS_WARN_THROTTLE(1.0, "Failed to prepare command for control.");
+    return;
+  }
+
+  ComputeAndApplyWheelControl(limited_command_twist_base, period, *runtime_params);
+  const Kinematics::ChassisTwist ODOM_TWIST =
+      ComputeAndIntegrateOdometry(time, DT, timeout, *runtime_params);
+  PublishOdometry(time, ODOM_TWIST, *runtime_params);
+}
+
+void SentryChassisController::stopping(const ros::Time& time)
+{
+  (void)time;
+  ResetControllerOutputsAndPids();
+  ResetControllerTrackingState(ros::Time(0));
 }
 
 bool SentryChassisController::IsOdomTwistAcceptable(

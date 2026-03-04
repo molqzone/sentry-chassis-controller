@@ -233,6 +233,83 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     controller->has_last_limited_command_ = false;
   }
 
+  static void SetAccelerationLimiterState(
+      SentryChassisController* controller,
+      const Kinematics::ChassisTwist& last_limited_command)
+  {
+    controller->last_limited_command_ = last_limited_command;
+    controller->has_last_limited_command_ = true;
+  }
+
+  static bool HasLastLimitedCommand(const SentryChassisController* controller)
+  {
+    return controller->has_last_limited_command_;
+  }
+
+  static void SetControllerStartTime(SentryChassisController* controller,
+                                     const ros::Time& start_time)
+  {
+    controller->controller_start_time_ = start_time;
+  }
+
+  static void SetCommandTransformCache(
+      SentryChassisController* controller, const std::array<double, 9>& rotation_matrix,
+      bool valid)
+  {
+    SentryChassisController::CommandTransformCache cache;
+    cache.rotation_matrix_row_major = rotation_matrix;
+    cache.valid = valid;
+    controller->command_transform_buffer_.writeFromNonRT(cache);
+  }
+
+  static bool ResolveCommandInBaseFrame(
+      SentryChassisController* controller, SentryChassisController::CommandVelocityMode mode,
+      const std::string& command_frame_id, const std::string& base_frame_id,
+      const ros::Time& time, double vx, double vy, double wz,
+      Kinematics::ChassisTwist* output)
+  {
+    SentryChassisController::CommandData command;
+    command.vx = vx;
+    command.vy = vy;
+    command.wz = wz;
+    command.stamp = time;
+    command.valid = true;
+
+    SentryChassisController::RuntimeParams runtime_params;
+    runtime_params.command_velocity_mode = mode;
+    runtime_params.command_frame_id = command_frame_id;
+    runtime_params.base_frame_id = base_frame_id;
+    return controller->ResolveCommandInBaseFrame(command, time, runtime_params, output);
+  }
+
+  static bool PrepareCommandForControl(
+      SentryChassisController* controller,
+      const SentryChassisController::RuntimeParams& runtime_params, const ros::Time& now,
+      double dt, bool command_valid, const ros::Time& command_stamp, double vx, double vy,
+      double wz, Kinematics::ChassisTwist* output, bool* timeout)
+  {
+    SentryChassisController::CommandData command;
+    command.vx = vx;
+    command.vy = vy;
+    command.wz = wz;
+    command.valid = command_valid;
+    command.stamp = command_stamp;
+    return controller->PrepareCommandForControl(command, now, dt, runtime_params, output,
+                                                timeout);
+  }
+
+  static bool PrepareCommandForControlBaseLinkMode(
+      SentryChassisController* controller, const ros::Time& now, double dt,
+      bool command_valid, const ros::Time& command_stamp, double vx, double vy, double wz,
+      Kinematics::ChassisTwist* output, bool* timeout)
+  {
+    SentryChassisController::RuntimeParams runtime_params;
+    runtime_params.command_velocity_mode =
+        SentryChassisController::CommandVelocityMode::BASE_LINK;
+    return PrepareCommandForControl(controller, runtime_params, now, dt, command_valid,
+                                    command_stamp, vx, vy, wz, output, timeout);
+  }
+
   static std::array<double, 4> ApplyPowerLimiting(
       SentryChassisController* controller, const std::array<double, 4>& signed_wheel_velocities,
       const std::array<double, 4>& input_signed_wheel_efforts, bool enable_power_limit,
@@ -414,6 +491,79 @@ TEST(SentryChassisControllerRuntimeParams, ApplyAccelerationLimitsBoundsDeltaPer
   EXPECT_NEAR(1.1, second_output.vx, 1e-9);
   EXPECT_NEAR(0.0, second_output.vy, 1e-9);
   EXPECT_NEAR(1.2, second_output.wz, 1e-9);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     ResolveCommandInBaseFrameUsesInputInBaseLinkMode)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  Kinematics::ChassisTwist resolved;
+  ASSERT_TRUE(SentryChassisControllerRuntimeParamsTestAccessor::ResolveCommandInBaseFrame(
+      &controller, SentryChassisController::CommandVelocityMode::BASE_LINK, "base_link",
+      "base_link", ros::Time(1.0), 1.2, -0.4, 0.7, &resolved));
+  EXPECT_DOUBLE_EQ(1.2, resolved.vx);
+  EXPECT_DOUBLE_EQ(-0.4, resolved.vy);
+  EXPECT_DOUBLE_EQ(0.7, resolved.wz);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     ResolveCommandInBaseFrameGlobalModeFailsWithoutTransformCache)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  Kinematics::ChassisTwist resolved;
+  EXPECT_FALSE(SentryChassisControllerRuntimeParamsTestAccessor::ResolveCommandInBaseFrame(
+      &controller, SentryChassisController::CommandVelocityMode::GLOBAL, "odom",
+      "base_link", ros::Time(1.0), 0.5, 0.1, -0.2, &resolved));
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     ResolveCommandInBaseFrameGlobalModeUsesCachedTransform)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  const std::array<double, 9> quarter_turn_rotation = {
+      {0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0}};
+  SentryChassisControllerRuntimeParamsTestAccessor::SetCommandTransformCache(
+      &controller, quarter_turn_rotation, true);
+
+  Kinematics::ChassisTwist resolved;
+  ASSERT_TRUE(SentryChassisControllerRuntimeParamsTestAccessor::ResolveCommandInBaseFrame(
+      &controller, SentryChassisController::CommandVelocityMode::GLOBAL, "odom",
+      "base_link", ros::Time(1.0), 1.0, 0.0, 0.3, &resolved));
+  EXPECT_NEAR(0.0, resolved.vx, 1e-9);
+  EXPECT_NEAR(1.0, resolved.vy, 1e-9);
+  EXPECT_NEAR(0.3, resolved.wz, 1e-9);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     PrepareCommandForControlTimeoutClearsAccelerationLimiterState)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  SentryChassisControllerRuntimeParamsTestAccessor::SetControllerStartTime(
+      &controller, ros::Time(10.0));
+
+  Kinematics::ChassisTwist last_limited;
+  last_limited.vx = 0.8;
+  last_limited.vy = 0.1;
+  last_limited.wz = 0.2;
+  SentryChassisControllerRuntimeParamsTestAccessor::SetAccelerationLimiterState(
+      &controller, last_limited);
+
+  Kinematics::ChassisTwist output;
+  bool timeout = false;
+  ASSERT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::PrepareCommandForControlBaseLinkMode(
+          &controller, ros::Time(10.1), 0.01, true, ros::Time(9.9), 1.0, 0.0, 0.0, &output,
+          &timeout));
+  EXPECT_TRUE(timeout);
+  EXPECT_FALSE(
+      SentryChassisControllerRuntimeParamsTestAccessor::HasLastLimitedCommand(&controller));
+  EXPECT_DOUBLE_EQ(0.0, output.vx);
+  EXPECT_DOUBLE_EQ(0.0, output.vy);
+  EXPECT_DOUBLE_EQ(0.0, output.wz);
 }
 
 TEST(SentryChassisControllerRuntimeParams, ApplyPowerLimitingScalesEffortsWhenOverBudget)

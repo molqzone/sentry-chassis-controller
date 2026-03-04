@@ -14,7 +14,6 @@ namespace sentry_chassis_controller
 // Runtime lower bound for wheel radius to avoid division by zero.
 constexpr double MIN_WHEEL_RADIUS = 1e-9;
 constexpr double MIN_VALID_DT = 1e-9;
-constexpr double TF_LOOKUP_TIMEOUT_SEC = 0.02;
 constexpr double ZERO_CMD_EPS = 1e-4;
 constexpr double GLOBAL_ALIGNMENT_GATE = 0.20;
 constexpr double PI = EIGEN_PI;
@@ -55,6 +54,7 @@ constexpr double MIN_POWER_SCALE = 0.0;
 constexpr double MAX_POWER_SCALE = 1.0;
 constexpr double REVERSE_STRAIGHT_VX_BOOST = 1.10;
 constexpr double MIN_QUATERNION_NORM = 1e-12;
+constexpr double COMMAND_TRANSFORM_CACHE_UPDATE_SEC = 0.01;
 
 // Wheel order suffix must stay aligned with config and kinematics.
 static const std::array<std::string, SentryChassisController::WHEEL_COUNT>

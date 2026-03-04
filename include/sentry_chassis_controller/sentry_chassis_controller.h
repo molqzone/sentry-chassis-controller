@@ -13,6 +13,7 @@
 #include <ros/publisher.h>
 #include <ros/subscriber.h>
 #include <ros/time.h>
+#include <ros/timer.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
@@ -202,6 +203,18 @@ class SentryChassisController
   };
 
   /**
+   * @brief  全局指令模式下的坐标变换缓存（非实时线程刷新，实时线程只读）
+   *         Cached transform for global command mode (non-RT refresh, RT read-only)
+   */
+  struct CommandTransformCache
+  {
+    std::array<double, 9> rotation_matrix_row_major{
+        {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+    ros::Time stamp;
+    bool valid = false;
+  };
+
+  /**
    * @brief  `/cmd_vel` 订阅回调
    *         `/cmd_vel` subscriber callback
    * @param  message 速度指令消息 Incoming velocity command message
@@ -269,6 +282,12 @@ class SentryChassisController
   void InitTfResources();
 
   /**
+   * @brief  初始化全局指令 TF 缓存刷新定时器（非实时线程）
+   *         Initializes global-command TF cache refresh timer (non-RT thread)
+   */
+  void InitCommandTransformCacheTimer(ros::NodeHandle& nh);
+
+  /**
    * @brief  初始化运行时动态调参服务
    *         Initializes runtime dynamic reconfigure service
    */
@@ -317,6 +336,31 @@ class SentryChassisController
                                  Kinematics::ChassisTwist* base_twist);
 
   /**
+   * @brief  准备本周期底盘指令（超时判定+坐标转换+加速度限幅）
+   *         Prepares per-cycle chassis command (timeout, frame resolve, accel limits)
+   */
+  bool PrepareCommandForControl(const CommandData& command, const ros::Time& time,
+                                double dt, const RuntimeParams& runtime_params,
+                                Kinematics::ChassisTwist* limited_command_twist_base,
+                                bool* timeout);
+
+  /**
+   * @brief  基于底盘指令计算并下发舵向/轮速控制
+   *         Computes and applies steering/wheel control from chassis command
+   */
+  void ComputeAndApplyWheelControl(
+      const Kinematics::ChassisTwist& limited_command_twist_base,
+      const ros::Duration& period, const RuntimeParams& runtime_params);
+
+  /**
+   * @brief  基于轮反馈计算里程计速度并执行积分
+   *         Computes odometry twist from wheel feedback and integrates state
+   */
+  Kinematics::ChassisTwist ComputeAndIntegrateOdometry(
+      const ros::Time& time, double dt, bool timeout,
+      const RuntimeParams& runtime_params);
+
+  /**
    * @brief  解析单轴方向符号参数
    *         Parses one axis of wheel direction signs
    * @param  axis_values 参数原始数组 Raw parameter array
@@ -348,6 +392,18 @@ class SentryChassisController
    *         Returns true when parameters are valid
    */
   bool ValidateAndApplyControllerParams(bool strict_validation);
+
+  /**
+   * @brief  将全局指令 TF 缓存标记为无效
+   *         Marks global-command TF cache as invalid
+   */
+  void InvalidateCommandTransformCache();
+
+  /**
+   * @brief  非实时线程刷新全局指令 TF 缓存
+   *         Refreshes global-command TF cache in non-RT thread
+   */
+  void RefreshCommandTransformCache(const ros::TimerEvent& event);
 
   /**
    * @brief  将实时参数快照应用到控制循环上下文
@@ -390,6 +446,18 @@ class SentryChassisController
       double command);
 
   /**
+   * @brief  重置执行器输出与 PID
+   *         Resets actuator outputs and PID states
+   */
+  void ResetControllerOutputsAndPids();
+
+  /**
+   * @brief  重置控制循环跟踪状态
+   *         Resets controller runtime tracking state
+   */
+  void ResetControllerTrackingState(const ros::Time& start_time);
+
+  /**
    * @brief  发布当前里程计与 TF
    *         Publishes current odometry and TF
    * @param  time 当前控制时刻 Current control time
@@ -423,6 +491,8 @@ class SentryChassisController
       command_buffer_;  ///< 实时安全指令缓存 Realtime-safe command buffer
   realtime_tools::RealtimeBuffer<RuntimeParams>
       runtime_params_buffer_;  ///< 实时循环参数快照缓存 Runtime parameter snapshot buffer
+  realtime_tools::RealtimeBuffer<CommandTransformCache> command_transform_buffer_;
+  ros::Timer command_transform_cache_timer_;
   std::unique_ptr<ddynamic_reconfigure::DDynamicReconfigure>
       controller_params_reconfigure_;       ///< 控制器参数动态调参服务 Controller param dynamic server
   RuntimeParams runtime_params_shadow_;     ///< 非实时线程参数缓存 Non-realtime parameter cache
