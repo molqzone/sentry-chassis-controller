@@ -1,5 +1,11 @@
 #include <gtest/gtest.h>
+#include <hardware_interface/joint_command_interface.h>
 #include <ros/time.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <string>
 
 #include "sentry_chassis_controller/sentry_chassis_controller.h"
 
@@ -15,9 +21,33 @@ void EnsureRosTimeInitialized()
   }
 }
 
+struct UpdateJointStorage
+{
+  std::array<double, SentryChassisController::WHEEL_COUNT> steer_position{{0.0, 0.0, 0.0, 0.0}};
+  std::array<double, SentryChassisController::WHEEL_COUNT> steer_velocity{{0.0, 0.0, 0.0, 0.0}};
+  std::array<double, SentryChassisController::WHEEL_COUNT> steer_effort{{0.0, 0.0, 0.0, 0.0}};
+  std::array<double, SentryChassisController::WHEEL_COUNT> steer_command{{0.0, 0.0, 0.0, 0.0}};
+
+  std::array<double, SentryChassisController::WHEEL_COUNT> wheel_position{{0.0, 0.0, 0.0, 0.0}};
+  std::array<double, SentryChassisController::WHEEL_COUNT> wheel_velocity{{0.0, 0.0, 0.0, 0.0}};
+  std::array<double, SentryChassisController::WHEEL_COUNT> wheel_effort{{0.0, 0.0, 0.0, 0.0}};
+  std::array<double, SentryChassisController::WHEEL_COUNT> wheel_command{{0.0, 0.0, 0.0, 0.0}};
+};
+
+Kinematics::Geometry MakeValidTestGeometry()
+{
+  Kinematics::Geometry geometry;
+  geometry.wheel_base = 0.4;
+  geometry.track_width = 0.3;
+  geometry.wheel_radius = 0.1;
+  return geometry;
+}
+
 class SentryChassisControllerRuntimeParamsTestAccessor
 {
  public:
+  using RuntimeParams = SentryChassisController::RuntimeParams;
+
   static bool ValidateAndApply(SentryChassisController* controller, bool strict_validation)
   {
     return controller->ValidateAndApplyControllerParams(strict_validation);
@@ -146,6 +176,16 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     controller->min_power_scale_ = min_power_scale;
   }
 
+  static void SetOdomIntegrateOnTimeout(SentryChassisController* controller, bool enabled)
+  {
+    controller->odom_integrate_on_timeout_ = enabled;
+  }
+
+  static void SetPublishTf(SentryChassisController* controller, bool enabled)
+  {
+    controller->publish_tf_ = enabled;
+  }
+
   static void SetWheelRadius(SentryChassisController* controller, double wheel_radius)
   {
     controller->geometry_.wheel_radius = wheel_radius;
@@ -250,6 +290,78 @@ class SentryChassisControllerRuntimeParamsTestAccessor
                                      const ros::Time& start_time)
   {
     controller->controller_start_time_ = start_time;
+  }
+
+  static bool GetLastCommandTimedOut(const SentryChassisController* controller)
+  {
+    return controller->last_command_timed_out_;
+  }
+
+  static void ConfigureUpdateJointHandles(SentryChassisController* controller,
+                                          UpdateJointStorage* storage)
+  {
+    ASSERT_NE(storage, nullptr);
+    for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
+    {
+      const std::string STEER_NAME = "test_steer_joint_" + std::to_string(i);
+      const std::string WHEEL_NAME = "test_wheel_joint_" + std::to_string(i);
+      hardware_interface::JointStateHandle steer_state(
+          STEER_NAME, &storage->steer_position[i], &storage->steer_velocity[i],
+          &storage->steer_effort[i]);
+      hardware_interface::JointStateHandle wheel_state(
+          WHEEL_NAME, &storage->wheel_position[i], &storage->wheel_velocity[i],
+          &storage->wheel_effort[i]);
+      controller->steer_joints_[i] =
+          hardware_interface::JointHandle(steer_state, &storage->steer_command[i]);
+      controller->wheel_joints_[i] =
+          hardware_interface::JointHandle(wheel_state, &storage->wheel_command[i]);
+    }
+  }
+
+  static void ConfigureUpdateLoopDependencies(SentryChassisController* controller)
+  {
+    ASSERT_NE(controller, nullptr);
+    controller->direction_signs_ = Kinematics::DirectionSigns();
+    controller->wheel_rolling_signs_ = {{1, 1, 1, 1}};
+    controller->steer_zero_offsets_ = {{0.0, 0.0, 0.0, 0.0}};
+    controller->command_compensation_matrix_ = {
+        {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+    controller->kinematics_.SetDirectionSigns(controller->direction_signs_);
+    controller->applied_geometry_ = Kinematics::Geometry();
+    controller->applied_odom_frame_id_ = "odom";
+    controller->applied_base_frame_id_ = "base_link";
+    for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
+    {
+      controller->steer_pids_[i].initPid(1.0, 0.0, 0.0, 1e9, -1e9, false);
+      controller->wheel_pids_[i].initPid(1.0, 0.0, 0.0, 1e9, -1e9, false);
+    }
+  }
+
+  static void WriteRuntimeParamsSnapshot(
+      SentryChassisController* controller,
+      const SentryChassisController::RuntimeParams& runtime_params)
+  {
+    controller->runtime_params_shadow_ = runtime_params;
+    controller->runtime_params_buffer_.initRT(runtime_params);
+    controller->runtime_params_buffer_.writeFromNonRT(runtime_params);
+  }
+
+  static void WriteCommandSnapshot(SentryChassisController* controller, double vx, double vy,
+                                   double wz, const ros::Time& stamp, bool valid)
+  {
+    SentryChassisController::CommandData command;
+    command.vx = vx;
+    command.vy = vy;
+    command.wz = wz;
+    command.stamp = stamp;
+    command.valid = valid;
+    controller->command_buffer_.initRT(command);
+    controller->command_buffer_.writeFromNonRT(command);
+  }
+
+  static void RunUpdate(SentryChassisController* controller, const ros::Time& time, double dt)
+  {
+    controller->update(time, ros::Duration(dt));
   }
 
   static void SetCommandTransformCache(
@@ -359,6 +471,9 @@ TEST(SentryChassisControllerRuntimeParams,
   SentryChassisControllerRuntimeParamsTestAccessor::SetPowerLossK1(&controller, -0.1);
   SentryChassisControllerRuntimeParamsTestAccessor::SetPowerLossK2(&controller, -0.2);
   SentryChassisControllerRuntimeParamsTestAccessor::SetMinPowerScale(&controller, 1.2);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetOdomIntegrateOnTimeout(&controller,
+                                                                               true);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetPublishTf(&controller, false);
   SentryChassisControllerRuntimeParamsTestAccessor::SetWheelRadius(&controller, 0.0);
 
   ASSERT_TRUE(
@@ -370,6 +485,8 @@ TEST(SentryChassisControllerRuntimeParams,
   EXPECT_DOUBLE_EQ(0.0, runtime_params->odom_startup_hold_sec);
   EXPECT_DOUBLE_EQ(8.0, runtime_params->odom_max_linear_speed);
   EXPECT_DOUBLE_EQ(16.0, runtime_params->odom_max_angular_speed);
+  EXPECT_TRUE(runtime_params->odom_integrate_on_timeout);
+  EXPECT_FALSE(runtime_params->publish_tf);
   EXPECT_DOUBLE_EQ(12.0, runtime_params->wheel_effort_limit);
   EXPECT_DOUBLE_EQ(0.1, runtime_params->reverse_ccw_vx_scale);
   EXPECT_DOUBLE_EQ(1.0, runtime_params->reverse_ccw_wz_gain);
@@ -564,6 +681,145 @@ TEST(SentryChassisControllerRuntimeParams,
   EXPECT_DOUBLE_EQ(0.0, output.vx);
   EXPECT_DOUBLE_EQ(0.0, output.vy);
   EXPECT_DOUBLE_EQ(0.0, output.wz);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     UpdateMainPathWritesWheelCommandsForFreshBaseLinkCommand)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  UpdateJointStorage joint_storage;
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateJointHandles(
+      &controller, &joint_storage);
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateLoopDependencies(
+      &controller);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RuntimeParams runtime_params;
+  runtime_params.command_velocity_mode =
+      SentryChassisController::CommandVelocityMode::BASE_LINK;
+  runtime_params.command_frame_id = "base_link";
+  runtime_params.base_frame_id = "base_link";
+  runtime_params.odom_frame_id = "odom";
+  runtime_params.cmd_vel_timeout = 0.5;
+  runtime_params.publish_tf = false;
+  runtime_params.odom_integrate_on_timeout = false;
+  runtime_params.enable_acceleration_limits = false;
+  runtime_params.enable_power_limit = false;
+  runtime_params.geometry = MakeValidTestGeometry();
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteRuntimeParamsSnapshot(
+      &controller, runtime_params);
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteCommandSnapshot(
+      &controller, 0.6, 0.0, 0.0, ros::Time(10.1), true);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetControllerStartTime(
+      &controller, ros::Time(10.0));
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RunUpdate(&controller, ros::Time(10.12),
+                                                              0.02);
+  EXPECT_FALSE(
+      SentryChassisControllerRuntimeParamsTestAccessor::GetLastCommandTimedOut(&controller));
+  const bool HAS_NONZERO_WHEEL_COMMAND = std::any_of(
+      joint_storage.wheel_command.begin(), joint_storage.wheel_command.end(),
+      [](double command) { return std::fabs(command) > 1e-6; });
+  EXPECT_TRUE(HAS_NONZERO_WHEEL_COMMAND);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     UpdateMainPathTimeoutZerosWheelCommandsAndSkipsOdomIntegration)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  UpdateJointStorage joint_storage;
+  for (auto& velocity : joint_storage.wheel_velocity)
+  {
+    velocity = 5.0;
+  }
+  for (auto& command : joint_storage.wheel_command)
+  {
+    command = 1.0;
+  }
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateJointHandles(
+      &controller, &joint_storage);
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateLoopDependencies(
+      &controller);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RuntimeParams runtime_params;
+  runtime_params.command_velocity_mode =
+      SentryChassisController::CommandVelocityMode::BASE_LINK;
+  runtime_params.command_frame_id = "base_link";
+  runtime_params.base_frame_id = "base_link";
+  runtime_params.odom_frame_id = "odom";
+  runtime_params.cmd_vel_timeout = 0.1;
+  runtime_params.publish_tf = false;
+  runtime_params.odom_integrate_on_timeout = false;
+  runtime_params.enable_acceleration_limits = false;
+  runtime_params.enable_power_limit = false;
+  runtime_params.geometry = MakeValidTestGeometry();
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteRuntimeParamsSnapshot(
+      &controller, runtime_params);
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteCommandSnapshot(
+      &controller, 0.5, 0.0, 0.0, ros::Time(9.0), true);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetControllerStartTime(
+      &controller, ros::Time(10.0));
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RunUpdate(&controller, ros::Time(10.2),
+                                                              0.02);
+  EXPECT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::GetLastCommandTimedOut(&controller));
+  for (const auto command : joint_storage.wheel_command)
+  {
+    EXPECT_DOUBLE_EQ(0.0, command);
+  }
+  const auto& odom_state =
+      SentryChassisControllerRuntimeParamsTestAccessor::GetOdomState(&controller);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.x);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.y);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.yaw);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     UpdateMainPathIntegratesOdomFromWheelFeedbackWhenCommandIsFresh)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  UpdateJointStorage joint_storage;
+  joint_storage.steer_position = {{0.35, -0.4, 2.5, -2.1}};
+  joint_storage.wheel_velocity = {{
+      5.618372135180479,
+      9.260048746613464,
+      -8.198839994552353,
+      -0.28616124517468616,
+  }};
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateJointHandles(
+      &controller, &joint_storage);
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateLoopDependencies(
+      &controller);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RuntimeParams runtime_params;
+  runtime_params.command_velocity_mode =
+      SentryChassisController::CommandVelocityMode::BASE_LINK;
+  runtime_params.command_frame_id = "base_link";
+  runtime_params.base_frame_id = "base_link";
+  runtime_params.odom_frame_id = "odom";
+  runtime_params.cmd_vel_timeout = 0.5;
+  runtime_params.publish_tf = false;
+  runtime_params.odom_integrate_on_timeout = false;
+  runtime_params.enable_acceleration_limits = false;
+  runtime_params.enable_power_limit = false;
+  runtime_params.geometry = MakeValidTestGeometry();
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteRuntimeParamsSnapshot(
+      &controller, runtime_params);
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteCommandSnapshot(
+      &controller, 0.0, 0.0, 0.0, ros::Time(10.1), true);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetControllerStartTime(
+      &controller, ros::Time(10.0));
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RunUpdate(&controller, ros::Time(10.12),
+                                                              0.05);
+  EXPECT_FALSE(
+      SentryChassisControllerRuntimeParamsTestAccessor::GetLastCommandTimedOut(&controller));
+  const auto& odom_state =
+      SentryChassisControllerRuntimeParamsTestAccessor::GetOdomState(&controller);
+  EXPECT_GT(odom_state.x, 0.0);
 }
 
 TEST(SentryChassisControllerRuntimeParams, ApplyPowerLimitingScalesEffortsWhenOverBudget)

@@ -245,120 +245,103 @@ bool SentryChassisController::ParseCommandVelocityMode(
 
 bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_validation)
 {
+  struct PositiveFallbackRule
+  {
+    const char* name = "";
+    double* value = nullptr;
+    double fallback = 0.0;
+  };
+  struct NonNegativeFallbackRule
+  {
+    const char* name = "";
+    double* value = nullptr;
+    double fallback = 0.0;
+  };
+  struct NonNegativeZeroRule
+  {
+    const char* name = "";
+    double* value = nullptr;
+  };
+  struct RangeClampRule
+  {
+    const char* name = "";
+    double* value = nullptr;
+    double min = 0.0;
+    double max = 0.0;
+  };
+
   if (geometry_.wheel_radius < MIN_WHEEL_RADIUS)
   {
     ROS_WARN("Parameter 'geometry/wheel_radius' must be >= %.9f. Clamping to %.9f.",
              MIN_WHEEL_RADIUS, MIN_WHEEL_RADIUS);
     geometry_.wheel_radius = MIN_WHEEL_RADIUS;
   }
-  if (cmd_vel_timeout_ < 0.0)
+
+  const std::array<NonNegativeZeroRule, 2> NON_NEGATIVE_ZERO_RULES = {{
+      {"cmd_vel_timeout", &cmd_vel_timeout_},
+      {"odom_startup_hold_sec", &odom_startup_hold_sec_},
+  }};
+  for (const auto& rule : NON_NEGATIVE_ZERO_RULES)
   {
-    ROS_WARN("Parameter 'cmd_vel_timeout' is negative. Clamping to 0.0.");
-    cmd_vel_timeout_ = 0.0;
+    if (rule.value != nullptr && *rule.value < 0.0)
+    {
+      ROS_WARN("Parameter '%s' is negative. Clamping to 0.0.", rule.name);
+      *rule.value = 0.0;
+    }
   }
-  if (odom_startup_hold_sec_ < 0.0)
+
+  const std::array<PositiveFallbackRule, 6> POSITIVE_FALLBACK_RULES = {{
+      {"odom_max_linear_speed", &odom_max_linear_speed_, DEFAULT_ODOM_MAX_LINEAR_SPEED},
+      {"odom_max_angular_speed", &odom_max_angular_speed_, DEFAULT_ODOM_MAX_ANGULAR_SPEED},
+      {"wheel_effort_limit", &wheel_effort_limit_, DEFAULT_WHEEL_EFFORT_LIMIT},
+      {"max_linear_acceleration", &max_linear_acceleration_, DEFAULT_MAX_LINEAR_ACCELERATION},
+      {"max_angular_acceleration", &max_angular_acceleration_,
+       DEFAULT_MAX_ANGULAR_ACCELERATION},
+      {"max_power", &max_power_, DEFAULT_MAX_POWER},
+  }};
+  for (const auto& rule : POSITIVE_FALLBACK_RULES)
   {
-    ROS_WARN("Parameter 'odom_startup_hold_sec' is negative. Clamping to 0.0.");
-    odom_startup_hold_sec_ = 0.0;
+    if (rule.value != nullptr && *rule.value <= 0.0)
+    {
+      ROS_WARN("Parameter '%s' must be positive. Clamping to %.3f.",
+               rule.name, rule.fallback);
+      *rule.value = rule.fallback;
+    }
   }
-  if (odom_max_linear_speed_ <= 0.0)
+
+  const std::array<NonNegativeFallbackRule, 2> NON_NEGATIVE_FALLBACK_RULES = {{
+      {"power_loss_k1", &power_loss_k1_, DEFAULT_POWER_LOSS_K1},
+      {"power_loss_k2", &power_loss_k2_, DEFAULT_POWER_LOSS_K2},
+  }};
+  for (const auto& rule : NON_NEGATIVE_FALLBACK_RULES)
   {
-    ROS_WARN("Parameter 'odom_max_linear_speed' must be positive. Clamping to %.3f.",
-             DEFAULT_ODOM_MAX_LINEAR_SPEED);
-    odom_max_linear_speed_ = DEFAULT_ODOM_MAX_LINEAR_SPEED;
+    if (rule.value != nullptr && *rule.value < 0.0)
+    {
+      ROS_WARN("Parameter '%s' must be non-negative. Clamping to %.6f.",
+               rule.name, rule.fallback);
+      *rule.value = rule.fallback;
+    }
   }
-  if (odom_max_angular_speed_ <= 0.0)
+
+  const std::array<RangeClampRule, 5> RANGE_CLAMP_RULES = {{
+      {"reverse_ccw_vx_scale", &reverse_ccw_vx_scale_, MIN_REVERSE_CCW_VX_SCALE,
+       MAX_REVERSE_CCW_VX_SCALE},
+      {"reverse_ccw_wz_gain", &reverse_ccw_wz_gain_, MIN_REVERSE_CCW_WZ_GAIN,
+       MAX_REVERSE_CCW_WZ_GAIN},
+      {"reverse_ccw_vy_threshold", &reverse_ccw_vy_threshold_, MIN_REVERSE_CCW_VY_THRESHOLD,
+       MAX_REVERSE_CCW_VY_THRESHOLD},
+      {"reverse_ccw_steer_priority_error", &reverse_ccw_steer_priority_error_,
+       MIN_REVERSE_CCW_STEER_PRIORITY_ERROR, MAX_REVERSE_CCW_STEER_PRIORITY_ERROR},
+      {"min_power_scale", &min_power_scale_, MIN_POWER_SCALE, MAX_POWER_SCALE},
+  }};
+  for (const auto& rule : RANGE_CLAMP_RULES)
   {
-    ROS_WARN("Parameter 'odom_max_angular_speed' must be positive. Clamping to %.3f.",
-             DEFAULT_ODOM_MAX_ANGULAR_SPEED);
-    odom_max_angular_speed_ = DEFAULT_ODOM_MAX_ANGULAR_SPEED;
-  }
-  if (wheel_effort_limit_ <= 0.0)
-  {
-    ROS_WARN("Parameter 'wheel_effort_limit' must be positive. Clamping to %.3f.",
-             DEFAULT_WHEEL_EFFORT_LIMIT);
-    wheel_effort_limit_ = DEFAULT_WHEEL_EFFORT_LIMIT;
-  }
-  if (reverse_ccw_vx_scale_ < MIN_REVERSE_CCW_VX_SCALE ||
-      reverse_ccw_vx_scale_ > MAX_REVERSE_CCW_VX_SCALE)
-  {
-    ROS_WARN(
-        "Parameter 'reverse_ccw_vx_scale' must be in [%.3f, %.3f]. Clamping.",
-        MIN_REVERSE_CCW_VX_SCALE, MAX_REVERSE_CCW_VX_SCALE);
-    reverse_ccw_vx_scale_ =
-        std::max(MIN_REVERSE_CCW_VX_SCALE,
-                 std::min(MAX_REVERSE_CCW_VX_SCALE, reverse_ccw_vx_scale_));
-  }
-  if (reverse_ccw_wz_gain_ < MIN_REVERSE_CCW_WZ_GAIN ||
-      reverse_ccw_wz_gain_ > MAX_REVERSE_CCW_WZ_GAIN)
-  {
-    ROS_WARN(
-        "Parameter 'reverse_ccw_wz_gain' must be in [%.3f, %.3f]. Clamping.",
-        MIN_REVERSE_CCW_WZ_GAIN, MAX_REVERSE_CCW_WZ_GAIN);
-    reverse_ccw_wz_gain_ =
-        std::max(MIN_REVERSE_CCW_WZ_GAIN,
-                 std::min(MAX_REVERSE_CCW_WZ_GAIN, reverse_ccw_wz_gain_));
-  }
-  if (reverse_ccw_vy_threshold_ < MIN_REVERSE_CCW_VY_THRESHOLD ||
-      reverse_ccw_vy_threshold_ > MAX_REVERSE_CCW_VY_THRESHOLD)
-  {
-    ROS_WARN(
-        "Parameter 'reverse_ccw_vy_threshold' must be in [%.3f, %.3f]. Clamping.",
-        MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD);
-    reverse_ccw_vy_threshold_ =
-        std::max(MIN_REVERSE_CCW_VY_THRESHOLD,
-                 std::min(MAX_REVERSE_CCW_VY_THRESHOLD, reverse_ccw_vy_threshold_));
-  }
-  if (reverse_ccw_steer_priority_error_ < MIN_REVERSE_CCW_STEER_PRIORITY_ERROR ||
-      reverse_ccw_steer_priority_error_ > MAX_REVERSE_CCW_STEER_PRIORITY_ERROR)
-  {
-    ROS_WARN(
-        "Parameter 'reverse_ccw_steer_priority_error' must be in [%.3f, %.3f]. "
-        "Clamping.",
-        MIN_REVERSE_CCW_STEER_PRIORITY_ERROR,
-        MAX_REVERSE_CCW_STEER_PRIORITY_ERROR);
-    reverse_ccw_steer_priority_error_ =
-        std::max(MIN_REVERSE_CCW_STEER_PRIORITY_ERROR,
-                 std::min(MAX_REVERSE_CCW_STEER_PRIORITY_ERROR,
-                          reverse_ccw_steer_priority_error_));
-  }
-  if (max_linear_acceleration_ <= 0.0)
-  {
-    ROS_WARN("Parameter 'max_linear_acceleration' must be positive. Clamping to %.3f.",
-             DEFAULT_MAX_LINEAR_ACCELERATION);
-    max_linear_acceleration_ = DEFAULT_MAX_LINEAR_ACCELERATION;
-  }
-  if (max_angular_acceleration_ <= 0.0)
-  {
-    ROS_WARN(
-        "Parameter 'max_angular_acceleration' must be positive. Clamping to %.3f.",
-        DEFAULT_MAX_ANGULAR_ACCELERATION);
-    max_angular_acceleration_ = DEFAULT_MAX_ANGULAR_ACCELERATION;
-  }
-  if (max_power_ <= 0.0)
-  {
-    ROS_WARN("Parameter 'max_power' must be positive. Clamping to %.3f.",
-             DEFAULT_MAX_POWER);
-    max_power_ = DEFAULT_MAX_POWER;
-  }
-  if (power_loss_k1_ < 0.0)
-  {
-    ROS_WARN("Parameter 'power_loss_k1' must be non-negative. Clamping to %.6f.",
-             DEFAULT_POWER_LOSS_K1);
-    power_loss_k1_ = DEFAULT_POWER_LOSS_K1;
-  }
-  if (power_loss_k2_ < 0.0)
-  {
-    ROS_WARN("Parameter 'power_loss_k2' must be non-negative. Clamping to %.6f.",
-             DEFAULT_POWER_LOSS_K2);
-    power_loss_k2_ = DEFAULT_POWER_LOSS_K2;
-  }
-  if (min_power_scale_ < MIN_POWER_SCALE || min_power_scale_ > MAX_POWER_SCALE)
-  {
-    ROS_WARN("Parameter 'min_power_scale' must be in [%.3f, %.3f]. Clamping.",
-             MIN_POWER_SCALE, MAX_POWER_SCALE);
-    min_power_scale_ = std::max(MIN_POWER_SCALE,
-                                std::min(MAX_POWER_SCALE, min_power_scale_));
+    if (rule.value != nullptr && (*rule.value < rule.min || *rule.value > rule.max))
+    {
+      ROS_WARN("Parameter '%s' must be in [%.3f, %.3f]. Clamping.",
+               rule.name, rule.min, rule.max);
+      *rule.value = std::max(rule.min, std::min(rule.max, *rule.value));
+    }
   }
 
   CommandVelocityMode parsed_mode = command_velocity_mode_;
@@ -419,32 +402,84 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
         "Global transform will have no effect.",
         base_frame_id_.c_str());
   }
-  runtime_params_shadow_.command_velocity_mode = command_velocity_mode_;
-  runtime_params_shadow_.command_frame_id = command_frame_id_;
-  runtime_params_shadow_.odom_frame_id = odom_frame_id_;
-  runtime_params_shadow_.base_frame_id = base_frame_id_;
-  runtime_params_shadow_.cmd_vel_timeout = cmd_vel_timeout_;
-  runtime_params_shadow_.odom_startup_hold_sec = odom_startup_hold_sec_;
-  runtime_params_shadow_.odom_max_linear_speed = odom_max_linear_speed_;
-  runtime_params_shadow_.odom_max_angular_speed = odom_max_angular_speed_;
-  runtime_params_shadow_.odom_integrate_on_timeout = odom_integrate_on_timeout_;
-  runtime_params_shadow_.publish_tf = publish_tf_;
-  runtime_params_shadow_.wheel_effort_limit = wheel_effort_limit_;
-  runtime_params_shadow_.reverse_ccw_vx_scale = reverse_ccw_vx_scale_;
-  runtime_params_shadow_.reverse_ccw_wz_gain = reverse_ccw_wz_gain_;
-  runtime_params_shadow_.reverse_ccw_vy_threshold = reverse_ccw_vy_threshold_;
-  runtime_params_shadow_.reverse_ccw_steer_priority_error =
-      reverse_ccw_steer_priority_error_;
-  runtime_params_shadow_.enable_acceleration_limits = enable_acceleration_limits_;
-  runtime_params_shadow_.max_linear_acceleration = max_linear_acceleration_;
-  runtime_params_shadow_.max_angular_acceleration = max_angular_acceleration_;
-  runtime_params_shadow_.enable_power_limit = enable_power_limit_;
-  runtime_params_shadow_.enable_power_limit_logging = enable_power_limit_logging_;
-  runtime_params_shadow_.max_power = max_power_;
-  runtime_params_shadow_.power_loss_k1 = power_loss_k1_;
-  runtime_params_shadow_.power_loss_k2 = power_loss_k2_;
-  runtime_params_shadow_.min_power_scale = min_power_scale_;
-  runtime_params_shadow_.geometry = geometry_;
+  struct DoubleSnapshotBinding
+  {
+    double SentryChassisController::*source = nullptr;
+    double RuntimeParams::*target = nullptr;
+  };
+  struct BoolSnapshotBinding
+  {
+    bool SentryChassisController::*source = nullptr;
+    bool RuntimeParams::*target = nullptr;
+  };
+  struct StringSnapshotBinding
+  {
+    std::string SentryChassisController::*source = nullptr;
+    std::string RuntimeParams::*target = nullptr;
+  };
+  struct ModeSnapshotBinding
+  {
+    CommandVelocityMode SentryChassisController::*source = nullptr;
+    CommandVelocityMode RuntimeParams::*target = nullptr;
+  };
+  struct GeometrySnapshotBinding
+  {
+    Kinematics::Geometry SentryChassisController::*source = nullptr;
+    Kinematics::Geometry RuntimeParams::*target = nullptr;
+  };
+  const auto APPLY_BINDINGS = [this](const auto& bindings) {
+    for (const auto& binding : bindings)
+    {
+      runtime_params_shadow_.*(binding.target) = this->*(binding.source);
+    }
+  };
+  const std::array<DoubleSnapshotBinding, 15> DOUBLE_BINDINGS = {{
+      {&SentryChassisController::cmd_vel_timeout_, &RuntimeParams::cmd_vel_timeout},
+      {&SentryChassisController::odom_startup_hold_sec_, &RuntimeParams::odom_startup_hold_sec},
+      {&SentryChassisController::odom_max_linear_speed_, &RuntimeParams::odom_max_linear_speed},
+      {&SentryChassisController::odom_max_angular_speed_, &RuntimeParams::odom_max_angular_speed},
+      {&SentryChassisController::wheel_effort_limit_, &RuntimeParams::wheel_effort_limit},
+      {&SentryChassisController::reverse_ccw_vx_scale_, &RuntimeParams::reverse_ccw_vx_scale},
+      {&SentryChassisController::reverse_ccw_wz_gain_, &RuntimeParams::reverse_ccw_wz_gain},
+      {&SentryChassisController::reverse_ccw_vy_threshold_,
+       &RuntimeParams::reverse_ccw_vy_threshold},
+      {&SentryChassisController::reverse_ccw_steer_priority_error_,
+       &RuntimeParams::reverse_ccw_steer_priority_error},
+      {&SentryChassisController::max_linear_acceleration_,
+       &RuntimeParams::max_linear_acceleration},
+      {&SentryChassisController::max_angular_acceleration_,
+       &RuntimeParams::max_angular_acceleration},
+      {&SentryChassisController::max_power_, &RuntimeParams::max_power},
+      {&SentryChassisController::power_loss_k1_, &RuntimeParams::power_loss_k1},
+      {&SentryChassisController::power_loss_k2_, &RuntimeParams::power_loss_k2},
+      {&SentryChassisController::min_power_scale_, &RuntimeParams::min_power_scale},
+  }};
+  const std::array<BoolSnapshotBinding, 5> BOOL_BINDINGS = {{
+      {&SentryChassisController::odom_integrate_on_timeout_,
+       &RuntimeParams::odom_integrate_on_timeout},
+      {&SentryChassisController::publish_tf_, &RuntimeParams::publish_tf},
+      {&SentryChassisController::enable_acceleration_limits_,
+       &RuntimeParams::enable_acceleration_limits},
+      {&SentryChassisController::enable_power_limit_, &RuntimeParams::enable_power_limit},
+      {&SentryChassisController::enable_power_limit_logging_,
+       &RuntimeParams::enable_power_limit_logging},
+  }};
+  const std::array<StringSnapshotBinding, 3> STRING_BINDINGS = {{
+      {&SentryChassisController::command_frame_id_, &RuntimeParams::command_frame_id},
+      {&SentryChassisController::odom_frame_id_, &RuntimeParams::odom_frame_id},
+      {&SentryChassisController::base_frame_id_, &RuntimeParams::base_frame_id},
+  }};
+  const std::array<ModeSnapshotBinding, 1> MODE_BINDINGS = {{
+      {&SentryChassisController::command_velocity_mode_, &RuntimeParams::command_velocity_mode},
+  }};
+  const std::array<GeometrySnapshotBinding, 1> GEOMETRY_BINDINGS = {{
+      {&SentryChassisController::geometry_, &RuntimeParams::geometry},
+  }};
+  APPLY_BINDINGS(DOUBLE_BINDINGS);
+  APPLY_BINDINGS(BOOL_BINDINGS);
+  APPLY_BINDINGS(STRING_BINDINGS);
+  APPLY_BINDINGS(MODE_BINDINGS);
+  APPLY_BINDINGS(GEOMETRY_BINDINGS);
   runtime_params_buffer_.writeFromNonRT(runtime_params_shadow_);
   InvalidateCommandTransformCache();
   RefreshCommandTransformCache(ros::TimerEvent());
@@ -1025,7 +1060,10 @@ void SentryChassisController::PublishOdometry(const ros::Time& time,
   odometry.twist.twist.linear.x = twist.vx;
   odometry.twist.twist.linear.y = twist.vy;
   odometry.twist.twist.angular.z = twist.wz;
-  odom_publisher_.publish(odometry);
+  if (odom_publisher_)
+  {
+    odom_publisher_.publish(odometry);
+  }
 
   if (!runtime_params.publish_tf || !tf_broadcaster_)
   {
