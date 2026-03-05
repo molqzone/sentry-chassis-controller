@@ -18,7 +18,9 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <atomic>
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -110,33 +112,6 @@ class SentryChassisController
     GLOBAL = 1,     ///< 按全局坐标解释并转换 / Interpret command as global frame
   };
 
-#define SENTRY_CHASSIS_RUNTIME_PARAM_FIELD_LIST(APPLY)                                   \
-  APPLY(CommandVelocityMode, command_velocity_mode, CommandVelocityMode::BASE_LINK)      \
-  APPLY(std::string, command_frame_id, "base_link")                                      \
-  APPLY(std::string, odom_frame_id, "odom")                                              \
-  APPLY(std::string, base_frame_id, "base_link")                                         \
-  APPLY(double, cmd_vel_timeout, 0.25)                                                   \
-  APPLY(double, odom_startup_hold_sec, 1.0)                                              \
-  APPLY(double, odom_max_linear_speed, 8.0)                                              \
-  APPLY(double, odom_max_angular_speed, 16.0)                                            \
-  APPLY(bool, odom_integrate_on_timeout, false)                                          \
-  APPLY(bool, publish_tf, true)                                                          \
-  APPLY(double, wheel_effort_limit, 12.0)                                                \
-  APPLY(double, reverse_ccw_vx_scale, 1.0)                                               \
-  APPLY(double, reverse_ccw_wz_gain, 1.0)                                                \
-  APPLY(double, reverse_ccw_vy_threshold, 0.03)                                          \
-  APPLY(double, reverse_ccw_steer_priority_error, 0.6)                                   \
-  APPLY(bool, enable_acceleration_limits, false)                                         \
-  APPLY(double, max_linear_acceleration, 3.0)                                            \
-  APPLY(double, max_angular_acceleration, 5.0)                                           \
-  APPLY(bool, enable_power_limit, false)                                                 \
-  APPLY(bool, enable_power_limit_logging, false)                                         \
-  APPLY(double, max_power, 360.0)                                                        \
-  APPLY(double, power_loss_k1, 0.001)                                                    \
-  APPLY(double, power_loss_k2, 0.0001)                                                   \
-  APPLY(double, min_power_scale, 0.3)                                                    \
-  APPLY(Kinematics::Geometry, geometry, Kinematics::Geometry{})
-
   /**
    * @brief  根据 TF 变换将速度从源坐标系转换到目标坐标系
    *         Transforms twist from source frame to target frame via TF transform
@@ -202,10 +177,9 @@ class SentryChassisController
    */
   struct RuntimeParams
   {
-#define DECLARE_RUNTIME_PARAM_FIELD(type, name, default_value) \
-  type name = default_value;
-    SENTRY_CHASSIS_RUNTIME_PARAM_FIELD_LIST(DECLARE_RUNTIME_PARAM_FIELD)
-#undef DECLARE_RUNTIME_PARAM_FIELD
+#define SENTRY_RUNTIME_PARAM_FIELD(type, name, default_value) type name = default_value;
+#include "sentry_chassis_controller/runtime_param_fields.inc"
+#undef SENTRY_RUNTIME_PARAM_FIELD
   };
 
   /**
@@ -412,6 +386,12 @@ class SentryChassisController
   void RefreshCommandTransformCache(const ros::TimerEvent& event);
 
   /**
+   * @brief  在非实时线程汇总输出实时循环延迟告警
+   *         Aggregates deferred realtime-loop warnings in non-realtime thread
+   */
+  void FlushDeferredRealtimeWarnings();
+
+  /**
    * @brief  将实时参数快照应用到控制循环上下文
    *         Applies runtime snapshot to update-loop local context
    * @param  runtime_params 实时参数快照 Runtime parameter snapshot
@@ -439,7 +419,7 @@ class SentryChassisController
    */
   void ApplyPowerLimiting(const RuntimeParams& runtime_params,
                           const std::array<double, WHEEL_COUNT>& signed_wheel_velocities,
-                          std::array<double, WHEEL_COUNT>* signed_wheel_efforts) const;
+                          std::array<double, WHEEL_COUNT>* signed_wheel_efforts);
 
   /**
    * @brief  将一组关节命令统一设置为同一数值
@@ -562,6 +542,15 @@ class SentryChassisController
       false;  ///< 限幅状态是否已初始化 Whether limiter state has been initialized
   ros::Time controller_start_time_;  ///< 控制器启动时刻 Controller start timestamp
   bool last_command_timed_out_ = true;  ///< 上周期超时状态 Previous-cycle timeout flag
+  std::atomic<uint32_t> rt_warn_invalid_period_count_{0};
+  std::atomic<uint32_t> rt_warn_runtime_params_unready_count_{0};
+  std::atomic<uint32_t> rt_warn_command_buffer_unready_count_{0};
+  std::atomic<uint32_t> rt_warn_prepare_command_failed_count_{0};
+  std::atomic<uint32_t> rt_warn_transform_cache_unready_count_{0};
+  std::atomic<uint32_t> rt_warn_odom_singular_count_{0};
+  std::atomic<uint32_t> rt_warn_odom_startup_hold_count_{0};
+  std::atomic<uint32_t> rt_warn_odom_rejected_count_{0};
+  std::atomic<uint32_t> rt_warn_power_limit_active_count_{0};
 };
 
 }  // namespace sentry_chassis_controller

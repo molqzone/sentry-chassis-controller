@@ -245,6 +245,9 @@ bool SentryChassisController::ParseCommandVelocityMode(
 
 bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_validation)
 {
+  const std::string PREVIOUS_ODOM_FRAME_ID = runtime_params_shadow_.odom_frame_id;
+  const std::string PREVIOUS_BASE_FRAME_ID = runtime_params_shadow_.base_frame_id;
+
   struct PositiveFallbackRule
   {
     const char* name;
@@ -402,11 +405,21 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
         "Global transform will have no effect.",
         base_frame_id_.c_str());
   }
+  if (!strict_validation &&
+      (PREVIOUS_ODOM_FRAME_ID != odom_frame_id_ ||
+       PREVIOUS_BASE_FRAME_ID != base_frame_id_))
+  {
+    ROS_WARN(
+        "Odometry frame parameters changed (odom: '%s' -> '%s', base: '%s' -> '%s'). "
+        "Resetting accumulated odometry state.",
+        PREVIOUS_ODOM_FRAME_ID.c_str(), odom_frame_id_.c_str(),
+        PREVIOUS_BASE_FRAME_ID.c_str(), base_frame_id_.c_str());
+  }
 
-#define APPLY_RUNTIME_PARAM_SNAPSHOT_FIELD(type, field_name, default_value) \
+#define SENTRY_RUNTIME_PARAM_FIELD(type, field_name, default_value) \
   runtime_params_shadow_.field_name = field_name##_;
-  SENTRY_CHASSIS_RUNTIME_PARAM_FIELD_LIST(APPLY_RUNTIME_PARAM_SNAPSHOT_FIELD)
-#undef APPLY_RUNTIME_PARAM_SNAPSHOT_FIELD
+#include "sentry_chassis_controller/runtime_param_fields.inc"
+#undef SENTRY_RUNTIME_PARAM_FIELD
 
   runtime_params_buffer_.writeFromNonRT(runtime_params_shadow_);
   InvalidateCommandTransformCache();
@@ -425,6 +438,7 @@ void SentryChassisController::RefreshCommandTransformCache(
     const ros::TimerEvent& event)
 {
   (void)event;
+  FlushDeferredRealtimeWarnings();
   const RuntimeParams* runtime_params = runtime_params_buffer_.readFromRT();
   if (runtime_params == nullptr)
   {
@@ -518,6 +532,36 @@ void SentryChassisController::RefreshCommandTransformCache(
   command_transform_buffer_.writeFromNonRT(cache);
 }
 
+void SentryChassisController::FlushDeferredRealtimeWarnings()
+{
+  const auto FLUSH_WARNING = [](std::atomic<uint32_t>* counter,
+                                const char* message) {
+    const uint32_t COUNT = counter->exchange(0U, std::memory_order_relaxed);
+    if (COUNT > 0U)
+    {
+      ROS_WARN("%s (count=%u).", message, COUNT);
+    }
+  };
+  FLUSH_WARNING(&rt_warn_invalid_period_count_,
+                "Realtime update skipped due to non-positive period");
+  FLUSH_WARNING(&rt_warn_runtime_params_unready_count_,
+                "Realtime update skipped because runtime params are not ready");
+  FLUSH_WARNING(&rt_warn_command_buffer_unready_count_,
+                "Realtime update skipped because command buffer is not ready");
+  FLUSH_WARNING(&rt_warn_prepare_command_failed_count_,
+                "Realtime update skipped because command preparation failed");
+  FLUSH_WARNING(&rt_warn_transform_cache_unready_count_,
+                "Global command transform cache was not ready in realtime path");
+  FLUSH_WARNING(&rt_warn_odom_singular_count_,
+                "Forward kinematics was singular during realtime odometry");
+  FLUSH_WARNING(&rt_warn_odom_startup_hold_count_,
+                "Odom integration was suppressed by startup hold in realtime path");
+  FLUSH_WARNING(&rt_warn_odom_rejected_count_,
+                "Abnormal odom twist was rejected in realtime path");
+  FLUSH_WARNING(&rt_warn_power_limit_active_count_,
+                "Power limit was active in realtime path");
+}
+
 void SentryChassisController::ApplyRuntimeParamsInUpdate(
     const RuntimeParams& runtime_params)
 {
@@ -537,11 +581,6 @@ void SentryChassisController::ApplyRuntimeParamsInUpdate(
        runtime_params.base_frame_id != applied_base_frame_id_);
   if (FRAME_IDS_CHANGED)
   {
-    ROS_WARN(
-        "Odometry frame parameters changed (odom: '%s' -> '%s', base: '%s' -> '%s'). "
-        "Resetting accumulated odometry state.",
-        applied_odom_frame_id_.c_str(), runtime_params.odom_frame_id.c_str(),
-        applied_base_frame_id_.c_str(), runtime_params.base_frame_id.c_str());
     odom_state_ = OdomState();
   }
 
@@ -598,7 +637,7 @@ void SentryChassisController::ApplyAccelerationLimits(
 void SentryChassisController::ApplyPowerLimiting(
     const RuntimeParams& runtime_params,
     const std::array<double, WHEEL_COUNT>& signed_wheel_velocities,
-    std::array<double, WHEEL_COUNT>* signed_wheel_efforts) const
+    std::array<double, WHEEL_COUNT>* signed_wheel_efforts)
 {
   if (signed_wheel_efforts == nullptr || !runtime_params.enable_power_limit)
   {
@@ -656,9 +695,7 @@ void SentryChassisController::ApplyPowerLimiting(
 
   if (runtime_params.enable_power_limit_logging)
   {
-    ROS_WARN_THROTTLE(1.0,
-                      "Power limit active: predicted=%.3fW, max=%.3fW, scale=%.3f.",
-                      PREDICTED_INPUT_POWER, runtime_params.max_power, scale);
+    rt_warn_power_limit_active_count_.fetch_add(1U, std::memory_order_relaxed);
   }
 }
 
@@ -687,11 +724,7 @@ bool SentryChassisController::ResolveCommandInBaseFrame(const CommandData& comma
   const CommandTransformCache* command_transform = command_transform_buffer_.readFromRT();
   if (command_transform == nullptr || !command_transform->valid)
   {
-    ROS_WARN_THROTTLE(
-        1.0,
-        "Global command mode transform cache is not ready. "
-        "Failed to transform cmd_vel from '%s' to '%s'.",
-        runtime_params.command_frame_id.c_str(), runtime_params.base_frame_id.c_str());
+    rt_warn_transform_cache_unready_count_.fetch_add(1U, std::memory_order_relaxed);
     return false;
   }
 
@@ -831,9 +864,7 @@ Kinematics::ChassisTwist SentryChassisController::ComputeAndIntegrateOdometry(
       feedback, steer_zero_offsets_, wheel_rolling_signs_, &odom_twist);
   if (!ODOM_SOLVED)
   {
-    ROS_WARN_THROTTLE(1.0,
-                      "Forward kinematics matrix is singular. Skip odometry integration "
-                      "in this cycle.");
+    rt_warn_odom_singular_count_.fetch_add(1U, std::memory_order_relaxed);
     odom_twist = Kinematics::ChassisTwist();
   }
   else
@@ -853,18 +884,11 @@ Kinematics::ChassisTwist SentryChassisController::ComputeAndIntegrateOdometry(
       if (SHOULD_SUPPRESS_STARTUP_DRIFT)
       {
         odom_twist = Kinematics::ChassisTwist();
-        ROS_WARN_THROTTLE(
-            1.0,
-            "Suppress odometry integration during startup hold window (%.3fs remaining).",
-            runtime_params.odom_startup_hold_sec - STARTUP_AGE);
+        rt_warn_odom_startup_hold_count_.fetch_add(1U, std::memory_order_relaxed);
       }
       else if (!IsOdomTwistAcceptable(odom_twist, runtime_params))
       {
-        ROS_WARN_THROTTLE(
-            1.0,
-            "Reject abnormal odom twist (vx=%.3f, vy=%.3f, wz=%.3f). Check "
-            "steering alignment/rolling signs.",
-            odom_twist.vx, odom_twist.vy, odom_twist.wz);
+        rt_warn_odom_rejected_count_.fetch_add(1U, std::memory_order_relaxed);
         odom_twist = Kinematics::ChassisTwist();
       }
       else
@@ -910,14 +934,14 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   const double DT = period.toSec();
   if (DT <= MIN_VALID_DT)
   {
-    ROS_WARN_THROTTLE(1.0, "Skip update due to non-positive period.");
+    rt_warn_invalid_period_count_.fetch_add(1U, std::memory_order_relaxed);
     return;
   }
 
   const RuntimeParams* runtime_params = runtime_params_buffer_.readFromRT();
   if (runtime_params == nullptr)
   {
-    ROS_WARN_THROTTLE(1.0, "Runtime parameter snapshot is not initialized yet.");
+    rt_warn_runtime_params_unready_count_.fetch_add(1U, std::memory_order_relaxed);
     return;
   }
   ApplyRuntimeParamsInUpdate(*runtime_params);
@@ -925,7 +949,7 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   const CommandData* command = command_buffer_.readFromRT();
   if (command == nullptr)
   {
-    ROS_WARN_THROTTLE(1.0, "Command buffer is not initialized yet.");
+    rt_warn_command_buffer_unready_count_.fetch_add(1U, std::memory_order_relaxed);
     return;
   }
 
@@ -934,7 +958,7 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   if (!PrepareCommandForControl(*command, time, DT, *runtime_params,
                                 &limited_command_twist_base, &timeout))
   {
-    ROS_WARN_THROTTLE(1.0, "Failed to prepare command for control.");
+    rt_warn_prepare_command_failed_count_.fetch_add(1U, std::memory_order_relaxed);
     return;
   }
 
