@@ -43,6 +43,12 @@ Kinematics::Geometry MakeValidTestGeometry()
   return geometry;
 }
 
+std::array<double, SentryChassisController::WHEEL_COUNT>
+MakeNonSingularSteerPositions()
+{
+  return {{0.35, -0.4, 2.5, -2.1}};
+}
+
 class SentryChassisControllerRuntimeParamsTestAccessor
 {
  public:
@@ -689,6 +695,7 @@ TEST(SentryChassisControllerRuntimeParams,
   EnsureRosTimeInitialized();
   SentryChassisController controller;
   UpdateJointStorage joint_storage;
+  joint_storage.steer_position = MakeNonSingularSteerPositions();
   SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateJointHandles(
       &controller, &joint_storage);
   SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateLoopDependencies(
@@ -729,6 +736,7 @@ TEST(SentryChassisControllerRuntimeParams,
   EnsureRosTimeInitialized();
   SentryChassisController controller;
   UpdateJointStorage joint_storage;
+  joint_storage.steer_position = MakeNonSingularSteerPositions();
   for (auto& velocity : joint_storage.wheel_velocity)
   {
     velocity = 5.0;
@@ -782,7 +790,7 @@ TEST(SentryChassisControllerRuntimeParams,
   EnsureRosTimeInitialized();
   SentryChassisController controller;
   UpdateJointStorage joint_storage;
-  joint_storage.steer_position = {{0.35, -0.4, 2.5, -2.1}};
+  joint_storage.steer_position = MakeNonSingularSteerPositions();
   joint_storage.wheel_velocity = {{
       5.618372135180479,
       9.260048746613464,

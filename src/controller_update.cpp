@@ -6,6 +6,7 @@
 #include <cmath>
 #include <geometry_msgs/TransformStamped.h>
 #include <nav_msgs/Odometry.h>
+#include <ros/init.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/exceptions.h>
 
@@ -221,6 +222,33 @@ std::array<double, SentryChassisController::WHEEL_COUNT> BuildWheelDispatchComma
 }
 }  // namespace
 
+#define FOR_EACH_RUNTIME_PARAM_SNAPSHOT_FIELD(APPLY)                              \
+  APPLY(command_velocity_mode_, command_velocity_mode)                            \
+  APPLY(command_frame_id_, command_frame_id)                                      \
+  APPLY(odom_frame_id_, odom_frame_id)                                            \
+  APPLY(base_frame_id_, base_frame_id)                                            \
+  APPLY(cmd_vel_timeout_, cmd_vel_timeout)                                        \
+  APPLY(odom_startup_hold_sec_, odom_startup_hold_sec)                            \
+  APPLY(odom_max_linear_speed_, odom_max_linear_speed)                            \
+  APPLY(odom_max_angular_speed_, odom_max_angular_speed)                          \
+  APPLY(odom_integrate_on_timeout_, odom_integrate_on_timeout)                    \
+  APPLY(publish_tf_, publish_tf)                                                  \
+  APPLY(wheel_effort_limit_, wheel_effort_limit)                                  \
+  APPLY(reverse_ccw_vx_scale_, reverse_ccw_vx_scale)                              \
+  APPLY(reverse_ccw_wz_gain_, reverse_ccw_wz_gain)                                \
+  APPLY(reverse_ccw_vy_threshold_, reverse_ccw_vy_threshold)                      \
+  APPLY(reverse_ccw_steer_priority_error_, reverse_ccw_steer_priority_error)      \
+  APPLY(enable_acceleration_limits_, enable_acceleration_limits)                  \
+  APPLY(max_linear_acceleration_, max_linear_acceleration)                        \
+  APPLY(max_angular_acceleration_, max_angular_acceleration)                      \
+  APPLY(enable_power_limit_, enable_power_limit)                                  \
+  APPLY(enable_power_limit_logging_, enable_power_limit_logging)                  \
+  APPLY(max_power_, max_power)                                                    \
+  APPLY(power_loss_k1_, power_loss_k1)                                            \
+  APPLY(power_loss_k2_, power_loss_k2)                                            \
+  APPLY(min_power_scale_, min_power_scale)                                        \
+  APPLY(geometry_, geometry)
+
 bool SentryChassisController::ParseCommandVelocityMode(
     const std::string& mode_text, CommandVelocityMode* mode)
 {
@@ -283,7 +311,7 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   }};
   for (const auto& rule : NON_NEGATIVE_ZERO_RULES)
   {
-    if (rule.value != nullptr && *rule.value < 0.0)
+    if (*rule.value < 0.0)
     {
       ROS_WARN("Parameter '%s' is negative. Clamping to 0.0.", rule.name);
       *rule.value = 0.0;
@@ -301,7 +329,7 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   }};
   for (const auto& rule : POSITIVE_FALLBACK_RULES)
   {
-    if (rule.value != nullptr && *rule.value <= 0.0)
+    if (*rule.value <= 0.0)
     {
       ROS_WARN("Parameter '%s' must be positive. Clamping to %.3f.",
                rule.name, rule.fallback);
@@ -315,7 +343,7 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   }};
   for (const auto& rule : NON_NEGATIVE_FALLBACK_RULES)
   {
-    if (rule.value != nullptr && *rule.value < 0.0)
+    if (*rule.value < 0.0)
     {
       ROS_WARN("Parameter '%s' must be non-negative. Clamping to %.6f.",
                rule.name, rule.fallback);
@@ -336,7 +364,7 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   }};
   for (const auto& rule : RANGE_CLAMP_RULES)
   {
-    if (rule.value != nullptr && (*rule.value < rule.min || *rule.value > rule.max))
+    if (*rule.value < rule.min || *rule.value > rule.max)
     {
       ROS_WARN("Parameter '%s' must be in [%.3f, %.3f]. Clamping.",
                rule.name, rule.min, rule.max);
@@ -402,84 +430,12 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
         "Global transform will have no effect.",
         base_frame_id_.c_str());
   }
-  struct DoubleSnapshotBinding
-  {
-    double SentryChassisController::*source = nullptr;
-    double RuntimeParams::*target = nullptr;
-  };
-  struct BoolSnapshotBinding
-  {
-    bool SentryChassisController::*source = nullptr;
-    bool RuntimeParams::*target = nullptr;
-  };
-  struct StringSnapshotBinding
-  {
-    std::string SentryChassisController::*source = nullptr;
-    std::string RuntimeParams::*target = nullptr;
-  };
-  struct ModeSnapshotBinding
-  {
-    CommandVelocityMode SentryChassisController::*source = nullptr;
-    CommandVelocityMode RuntimeParams::*target = nullptr;
-  };
-  struct GeometrySnapshotBinding
-  {
-    Kinematics::Geometry SentryChassisController::*source = nullptr;
-    Kinematics::Geometry RuntimeParams::*target = nullptr;
-  };
-  const auto APPLY_BINDINGS = [this](const auto& bindings) {
-    for (const auto& binding : bindings)
-    {
-      runtime_params_shadow_.*(binding.target) = this->*(binding.source);
-    }
-  };
-  const std::array<DoubleSnapshotBinding, 15> DOUBLE_BINDINGS = {{
-      {&SentryChassisController::cmd_vel_timeout_, &RuntimeParams::cmd_vel_timeout},
-      {&SentryChassisController::odom_startup_hold_sec_, &RuntimeParams::odom_startup_hold_sec},
-      {&SentryChassisController::odom_max_linear_speed_, &RuntimeParams::odom_max_linear_speed},
-      {&SentryChassisController::odom_max_angular_speed_, &RuntimeParams::odom_max_angular_speed},
-      {&SentryChassisController::wheel_effort_limit_, &RuntimeParams::wheel_effort_limit},
-      {&SentryChassisController::reverse_ccw_vx_scale_, &RuntimeParams::reverse_ccw_vx_scale},
-      {&SentryChassisController::reverse_ccw_wz_gain_, &RuntimeParams::reverse_ccw_wz_gain},
-      {&SentryChassisController::reverse_ccw_vy_threshold_,
-       &RuntimeParams::reverse_ccw_vy_threshold},
-      {&SentryChassisController::reverse_ccw_steer_priority_error_,
-       &RuntimeParams::reverse_ccw_steer_priority_error},
-      {&SentryChassisController::max_linear_acceleration_,
-       &RuntimeParams::max_linear_acceleration},
-      {&SentryChassisController::max_angular_acceleration_,
-       &RuntimeParams::max_angular_acceleration},
-      {&SentryChassisController::max_power_, &RuntimeParams::max_power},
-      {&SentryChassisController::power_loss_k1_, &RuntimeParams::power_loss_k1},
-      {&SentryChassisController::power_loss_k2_, &RuntimeParams::power_loss_k2},
-      {&SentryChassisController::min_power_scale_, &RuntimeParams::min_power_scale},
-  }};
-  const std::array<BoolSnapshotBinding, 5> BOOL_BINDINGS = {{
-      {&SentryChassisController::odom_integrate_on_timeout_,
-       &RuntimeParams::odom_integrate_on_timeout},
-      {&SentryChassisController::publish_tf_, &RuntimeParams::publish_tf},
-      {&SentryChassisController::enable_acceleration_limits_,
-       &RuntimeParams::enable_acceleration_limits},
-      {&SentryChassisController::enable_power_limit_, &RuntimeParams::enable_power_limit},
-      {&SentryChassisController::enable_power_limit_logging_,
-       &RuntimeParams::enable_power_limit_logging},
-  }};
-  const std::array<StringSnapshotBinding, 3> STRING_BINDINGS = {{
-      {&SentryChassisController::command_frame_id_, &RuntimeParams::command_frame_id},
-      {&SentryChassisController::odom_frame_id_, &RuntimeParams::odom_frame_id},
-      {&SentryChassisController::base_frame_id_, &RuntimeParams::base_frame_id},
-  }};
-  const std::array<ModeSnapshotBinding, 1> MODE_BINDINGS = {{
-      {&SentryChassisController::command_velocity_mode_, &RuntimeParams::command_velocity_mode},
-  }};
-  const std::array<GeometrySnapshotBinding, 1> GEOMETRY_BINDINGS = {{
-      {&SentryChassisController::geometry_, &RuntimeParams::geometry},
-  }};
-  APPLY_BINDINGS(DOUBLE_BINDINGS);
-  APPLY_BINDINGS(BOOL_BINDINGS);
-  APPLY_BINDINGS(STRING_BINDINGS);
-  APPLY_BINDINGS(MODE_BINDINGS);
-  APPLY_BINDINGS(GEOMETRY_BINDINGS);
+
+#define APPLY_RUNTIME_PARAM_SNAPSHOT(source_member, target_member) \
+  runtime_params_shadow_.target_member = source_member;
+  FOR_EACH_RUNTIME_PARAM_SNAPSHOT_FIELD(APPLY_RUNTIME_PARAM_SNAPSHOT)
+#undef APPLY_RUNTIME_PARAM_SNAPSHOT
+
   runtime_params_buffer_.writeFromNonRT(runtime_params_shadow_);
   InvalidateCommandTransformCache();
   RefreshCommandTransformCache(ros::TimerEvent());
@@ -1064,6 +1020,12 @@ void SentryChassisController::PublishOdometry(const ros::Time& time,
   {
     odom_publisher_.publish(odometry);
   }
+  else if (ros::isInitialized())
+  {
+    ROS_WARN_THROTTLE(
+        1.0,
+        "Odometry publisher is invalid, skip odom publish in this cycle.");
+  }
 
   if (!runtime_params.publish_tf || !tf_broadcaster_)
   {
@@ -1081,5 +1043,6 @@ void SentryChassisController::PublishOdometry(const ros::Time& time,
   tf_broadcaster_->sendTransform(transform);
 }
 
+#undef FOR_EACH_RUNTIME_PARAM_SNAPSHOT_FIELD
 
 }  // namespace sentry_chassis_controller
