@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <string>
+#include <utility>
 
 #include "sentry_chassis_controller/sentry_chassis_controller.h"
 
@@ -47,6 +48,37 @@ std::array<double, SentryChassisController::WHEEL_COUNT>
 MakeNonSingularSteerPositions()
 {
   return {{0.35, -0.4, 2.5, -2.1}};
+}
+
+std::array<double, SentryChassisController::WHEEL_COUNT> BuildWheelVelocityFromTwist(
+    const Kinematics::Geometry& geometry,
+    const std::array<double, SentryChassisController::WHEEL_COUNT>& steer_positions,
+    const Kinematics::ChassisTwist& twist)
+{
+  const double HALF_WHEEL_BASE = geometry.wheel_base * 0.5;
+  const double HALF_TRACK_WIDTH = geometry.track_width * 0.5;
+  const std::array<std::pair<double, double>, SentryChassisController::WHEEL_COUNT>
+      MODULE_POSITIONS = {{
+          {HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
+          {HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
+          {-HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
+          {-HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
+      }};
+
+  std::array<double, SentryChassisController::WHEEL_COUNT> wheel_velocity{};
+  for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
+  {
+    const double THETA = steer_positions[i];
+    const double DIRECTION_X = std::cos(THETA);
+    const double DIRECTION_Y = std::sin(THETA);
+    const double MODULE_X = MODULE_POSITIONS[i].first;
+    const double MODULE_Y = MODULE_POSITIONS[i].second;
+    const double WHEEL_LINEAR_SPEED =
+        DIRECTION_X * twist.vx + DIRECTION_Y * twist.vy +
+        (-DIRECTION_X * MODULE_Y + DIRECTION_Y * MODULE_X) * twist.wz;
+    wheel_velocity[i] = WHEEL_LINEAR_SPEED / geometry.wheel_radius;
+  }
+  return wheel_velocity;
 }
 
 class SentryChassisControllerRuntimeParamsTestAccessor
@@ -790,13 +822,15 @@ TEST(SentryChassisControllerRuntimeParams,
   EnsureRosTimeInitialized();
   SentryChassisController controller;
   UpdateJointStorage joint_storage;
-  joint_storage.steer_position = MakeNonSingularSteerPositions();
-  joint_storage.wheel_velocity = {{
-      5.618372135180479,
-      9.260048746613464,
-      -8.198839994552353,
-      -0.28616124517468616,
-  }};
+  const auto TEST_GEOMETRY = MakeValidTestGeometry();
+  const auto STEER_POSITIONS = MakeNonSingularSteerPositions();
+  joint_storage.steer_position = STEER_POSITIONS;
+  Kinematics::ChassisTwist expected_twist;
+  expected_twist.vx = 0.8;
+  expected_twist.vy = -0.3;
+  expected_twist.wz = 1.2;
+  joint_storage.wheel_velocity =
+      BuildWheelVelocityFromTwist(TEST_GEOMETRY, STEER_POSITIONS, expected_twist);
   SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateJointHandles(
       &controller, &joint_storage);
   SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateLoopDependencies(
@@ -813,7 +847,7 @@ TEST(SentryChassisControllerRuntimeParams,
   runtime_params.odom_integrate_on_timeout = false;
   runtime_params.enable_acceleration_limits = false;
   runtime_params.enable_power_limit = false;
-  runtime_params.geometry = MakeValidTestGeometry();
+  runtime_params.geometry = TEST_GEOMETRY;
   SentryChassisControllerRuntimeParamsTestAccessor::WriteRuntimeParamsSnapshot(
       &controller, runtime_params);
   SentryChassisControllerRuntimeParamsTestAccessor::WriteCommandSnapshot(

@@ -110,6 +110,33 @@ class SentryChassisController
     GLOBAL = 1,     ///< 按全局坐标解释并转换 / Interpret command as global frame
   };
 
+#define SENTRY_CHASSIS_RUNTIME_PARAM_FIELD_LIST(APPLY)                                   \
+  APPLY(CommandVelocityMode, command_velocity_mode, CommandVelocityMode::BASE_LINK)      \
+  APPLY(std::string, command_frame_id, "base_link")                                      \
+  APPLY(std::string, odom_frame_id, "odom")                                              \
+  APPLY(std::string, base_frame_id, "base_link")                                         \
+  APPLY(double, cmd_vel_timeout, 0.25)                                                   \
+  APPLY(double, odom_startup_hold_sec, 1.0)                                              \
+  APPLY(double, odom_max_linear_speed, 8.0)                                              \
+  APPLY(double, odom_max_angular_speed, 16.0)                                            \
+  APPLY(bool, odom_integrate_on_timeout, false)                                          \
+  APPLY(bool, publish_tf, true)                                                          \
+  APPLY(double, wheel_effort_limit, 12.0)                                                \
+  APPLY(double, reverse_ccw_vx_scale, 1.0)                                               \
+  APPLY(double, reverse_ccw_wz_gain, 1.0)                                                \
+  APPLY(double, reverse_ccw_vy_threshold, 0.03)                                          \
+  APPLY(double, reverse_ccw_steer_priority_error, 0.6)                                   \
+  APPLY(bool, enable_acceleration_limits, false)                                         \
+  APPLY(double, max_linear_acceleration, 3.0)                                            \
+  APPLY(double, max_angular_acceleration, 5.0)                                           \
+  APPLY(bool, enable_power_limit, false)                                                 \
+  APPLY(bool, enable_power_limit_logging, false)                                         \
+  APPLY(double, max_power, 360.0)                                                        \
+  APPLY(double, power_loss_k1, 0.001)                                                    \
+  APPLY(double, power_loss_k2, 0.0001)                                                   \
+  APPLY(double, min_power_scale, 0.3)                                                    \
+  APPLY(Kinematics::Geometry, geometry, Kinematics::Geometry{})
+
   /**
    * @brief  根据 TF 变换将速度从源坐标系转换到目标坐标系
    *         Transforms twist from source frame to target frame via TF transform
@@ -175,31 +202,10 @@ class SentryChassisController
    */
   struct RuntimeParams
   {
-    CommandVelocityMode command_velocity_mode = CommandVelocityMode::BASE_LINK;
-    std::string command_frame_id = "base_link";
-    std::string odom_frame_id = "odom";
-    std::string base_frame_id = "base_link";
-    double cmd_vel_timeout = 0.25;
-    double odom_startup_hold_sec = 1.0;
-    double odom_max_linear_speed = 8.0;
-    double odom_max_angular_speed = 16.0;
-    bool odom_integrate_on_timeout = false;
-    bool publish_tf = true;
-    double wheel_effort_limit = 12.0;
-    double reverse_ccw_vx_scale = 1.0;
-    double reverse_ccw_wz_gain = 1.0;
-    double reverse_ccw_vy_threshold = 0.03;
-    double reverse_ccw_steer_priority_error = 0.6;
-    bool enable_acceleration_limits = false;
-    double max_linear_acceleration = 3.0;
-    double max_angular_acceleration = 5.0;
-    bool enable_power_limit = false;
-    bool enable_power_limit_logging = false;
-    double max_power = 360.0;
-    double power_loss_k1 = 0.001;
-    double power_loss_k2 = 0.0001;
-    double min_power_scale = 0.3;
-    Kinematics::Geometry geometry{};
+#define DECLARE_RUNTIME_PARAM_FIELD(type, name, default_value) \
+  type name = default_value;
+    SENTRY_CHASSIS_RUNTIME_PARAM_FIELD_LIST(DECLARE_RUNTIME_PARAM_FIELD)
+#undef DECLARE_RUNTIME_PARAM_FIELD
   };
 
   /**

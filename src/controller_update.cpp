@@ -6,7 +6,6 @@
 #include <cmath>
 #include <geometry_msgs/TransformStamped.h>
 #include <nav_msgs/Odometry.h>
-#include <ros/init.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/exceptions.h>
 
@@ -222,33 +221,6 @@ std::array<double, SentryChassisController::WHEEL_COUNT> BuildWheelDispatchComma
 }
 }  // namespace
 
-#define FOR_EACH_RUNTIME_PARAM_SNAPSHOT_FIELD(APPLY)                              \
-  APPLY(command_velocity_mode_, command_velocity_mode)                            \
-  APPLY(command_frame_id_, command_frame_id)                                      \
-  APPLY(odom_frame_id_, odom_frame_id)                                            \
-  APPLY(base_frame_id_, base_frame_id)                                            \
-  APPLY(cmd_vel_timeout_, cmd_vel_timeout)                                        \
-  APPLY(odom_startup_hold_sec_, odom_startup_hold_sec)                            \
-  APPLY(odom_max_linear_speed_, odom_max_linear_speed)                            \
-  APPLY(odom_max_angular_speed_, odom_max_angular_speed)                          \
-  APPLY(odom_integrate_on_timeout_, odom_integrate_on_timeout)                    \
-  APPLY(publish_tf_, publish_tf)                                                  \
-  APPLY(wheel_effort_limit_, wheel_effort_limit)                                  \
-  APPLY(reverse_ccw_vx_scale_, reverse_ccw_vx_scale)                              \
-  APPLY(reverse_ccw_wz_gain_, reverse_ccw_wz_gain)                                \
-  APPLY(reverse_ccw_vy_threshold_, reverse_ccw_vy_threshold)                      \
-  APPLY(reverse_ccw_steer_priority_error_, reverse_ccw_steer_priority_error)      \
-  APPLY(enable_acceleration_limits_, enable_acceleration_limits)                  \
-  APPLY(max_linear_acceleration_, max_linear_acceleration)                        \
-  APPLY(max_angular_acceleration_, max_angular_acceleration)                      \
-  APPLY(enable_power_limit_, enable_power_limit)                                  \
-  APPLY(enable_power_limit_logging_, enable_power_limit_logging)                  \
-  APPLY(max_power_, max_power)                                                    \
-  APPLY(power_loss_k1_, power_loss_k1)                                            \
-  APPLY(power_loss_k2_, power_loss_k2)                                            \
-  APPLY(min_power_scale_, min_power_scale)                                        \
-  APPLY(geometry_, geometry)
-
 bool SentryChassisController::ParseCommandVelocityMode(
     const std::string& mode_text, CommandVelocityMode* mode)
 {
@@ -275,27 +247,27 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
 {
   struct PositiveFallbackRule
   {
-    const char* name = "";
-    double* value = nullptr;
-    double fallback = 0.0;
+    const char* name;
+    double* value;
+    double fallback;
   };
   struct NonNegativeFallbackRule
   {
-    const char* name = "";
-    double* value = nullptr;
-    double fallback = 0.0;
+    const char* name;
+    double* value;
+    double fallback;
   };
   struct NonNegativeZeroRule
   {
-    const char* name = "";
-    double* value = nullptr;
+    const char* name;
+    double* value;
   };
   struct RangeClampRule
   {
-    const char* name = "";
-    double* value = nullptr;
-    double min = 0.0;
-    double max = 0.0;
+    const char* name;
+    double* value;
+    double min;
+    double max;
   };
 
   if (geometry_.wheel_radius < MIN_WHEEL_RADIUS)
@@ -431,10 +403,10 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
         base_frame_id_.c_str());
   }
 
-#define APPLY_RUNTIME_PARAM_SNAPSHOT(source_member, target_member) \
-  runtime_params_shadow_.target_member = source_member;
-  FOR_EACH_RUNTIME_PARAM_SNAPSHOT_FIELD(APPLY_RUNTIME_PARAM_SNAPSHOT)
-#undef APPLY_RUNTIME_PARAM_SNAPSHOT
+#define APPLY_RUNTIME_PARAM_SNAPSHOT_FIELD(type, field_name, default_value) \
+  runtime_params_shadow_.field_name = field_name##_;
+  SENTRY_CHASSIS_RUNTIME_PARAM_FIELD_LIST(APPLY_RUNTIME_PARAM_SNAPSHOT_FIELD)
+#undef APPLY_RUNTIME_PARAM_SNAPSHOT_FIELD
 
   runtime_params_buffer_.writeFromNonRT(runtime_params_shadow_);
   InvalidateCommandTransformCache();
@@ -1020,12 +992,6 @@ void SentryChassisController::PublishOdometry(const ros::Time& time,
   {
     odom_publisher_.publish(odometry);
   }
-  else if (ros::isInitialized())
-  {
-    ROS_WARN_THROTTLE(
-        1.0,
-        "Odometry publisher is invalid, skip odom publish in this cycle.");
-  }
 
   if (!runtime_params.publish_tf || !tf_broadcaster_)
   {
@@ -1042,7 +1008,5 @@ void SentryChassisController::PublishOdometry(const ros::Time& time,
   transform.transform.rotation = odometry.pose.pose.orientation;
   tf_broadcaster_->sendTransform(transform);
 }
-
-#undef FOR_EACH_RUNTIME_PARAM_SNAPSHOT_FIELD
 
 }  // namespace sentry_chassis_controller
