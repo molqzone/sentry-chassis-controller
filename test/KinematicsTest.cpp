@@ -10,166 +10,140 @@ using sentry_chassis_controller::Kinematics;
 
 namespace
 {
-std::array<std::pair<double, double>, 4> build_module_positions(
+std::array<std::pair<double, double>, Kinematics::WHEEL_COUNT> build_module_positions(
     const Kinematics::Geometry& geometry)
 {
-  const double HALF_WHEEL_BASE = geometry.wheel_base * 0.5;
-  const double HALF_TRACK_WIDTH = geometry.track_width * 0.5;
+  const double half_wheel_base = geometry.wheel_base * 0.5;
+  const double half_track_width = geometry.track_width * 0.5;
   return {{
-      {HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
-      {HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
-      {-HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
-      {-HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
+      {half_wheel_base, half_track_width},
+      {half_wheel_base, -half_track_width},
+      {-half_wheel_base, half_track_width},
+      {-half_wheel_base, -half_track_width},
   }};
 }
 
 Kinematics::WheelFeedback build_feedback_from_twist(
     const Kinematics::Geometry& geometry, const Kinematics::ChassisTwist& twist,
-    const std::array<double, 4>& steer_positions,
-    const std::array<double, 4>& steer_zero_offsets,
-    const std::array<int, 4>& wheel_rolling_signs)
+    const std::array<double, Kinematics::WHEEL_COUNT>& steer_positions,
+    const std::array<double, Kinematics::WHEEL_COUNT>& steer_zero_offsets,
+    const std::array<int, Kinematics::WHEEL_COUNT>& wheel_rolling_signs)
 {
   Kinematics::WheelFeedback feedback;
   feedback.steer_position = steer_positions;
 
-  const auto MODULE_POSITIONS = build_module_positions(geometry);
-  for (std::size_t index = 0; index < 4; ++index)
+  const auto module_positions = build_module_positions(geometry);
+  for (std::size_t index = 0; index < Kinematics::WHEEL_COUNT; ++index)
   {
-    const double THETA = steer_positions[index] - steer_zero_offsets[index];
-    const double DIRECTION_X = std::cos(THETA);
-    const double DIRECTION_Y = std::sin(THETA);
-    const double MODULE_X = MODULE_POSITIONS[index].first;
-    const double MODULE_Y = MODULE_POSITIONS[index].second;
-    const double WHEEL_LINEAR_SPEED =
-        DIRECTION_X * twist.vx + DIRECTION_Y * twist.vy +
-        (-DIRECTION_X * MODULE_Y + DIRECTION_Y * MODULE_X) * twist.wz;
+    const double theta = steer_positions[index] - steer_zero_offsets[index];
+    const double direction_x = std::cos(theta);
+    const double direction_y = std::sin(theta);
+    const double module_x = module_positions[index].first;
+    const double module_y = module_positions[index].second;
+    const double wheel_linear_speed =
+        direction_x * twist.vx + direction_y * twist.vy +
+        (-direction_x * module_y + direction_y * module_x) * twist.wz;
     feedback.wheel_angular_velocity[index] =
-        WHEEL_LINEAR_SPEED /
+        wheel_linear_speed /
         (static_cast<double>(wheel_rolling_signs[index]) * geometry.wheel_radius);
   }
   return feedback;
 }
 }  // namespace
 
-TEST(Kinematics, ZeroInput)
+TEST(Kinematics, ComputeWheelTargetsKeepsIdleModulesInactive)
 {
   Kinematics kinematics;
-  const auto TARGETS = kinematics.ComputeWheelAngularVelocity(0.0, 0.0, 0.0);
+  const Kinematics::ChassisTwist twist{0.0, 0.0, 0.0};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_zero_offsets{{0.1, -0.2, 0.3, -0.4}};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_positions{{0.0, 0.0, 0.0, 0.0}};
 
-  EXPECT_DOUBLE_EQ(0.0, TARGETS.front_left);
-  EXPECT_DOUBLE_EQ(0.0, TARGETS.front_right);
-  EXPECT_DOUBLE_EQ(0.0, TARGETS.rear_left);
-  EXPECT_DOUBLE_EQ(0.0, TARGETS.rear_right);
+  const auto solution =
+      kinematics.ComputeWheelTargets(twist, steer_zero_offsets, steer_positions);
+
+  for (std::size_t index = 0; index < Kinematics::WHEEL_COUNT; ++index)
+  {
+    EXPECT_FALSE(solution.modules[index].active);
+    EXPECT_NEAR(steer_zero_offsets[index], solution.modules[index].steer_error, 1e-9);
+    EXPECT_NEAR(0.0, solution.modules[index].wheel_angular_velocity, 1e-9);
+  }
 }
 
-TEST(Kinematics, ForwardOnly)
+TEST(Kinematics, ComputeWheelTargetsSolvesForwardCommandForAlignedModules)
 {
   Kinematics::Geometry geometry;
   geometry.wheel_radius = 0.10;
 
-  Kinematics kinematics(geometry);
-  const auto TARGETS = kinematics.ComputeWheelAngularVelocity(1.0, 0.0, 0.0);
+  const Kinematics::ChassisTwist twist{1.0, 0.0, 0.0};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_zero_offsets{{0.0, 0.0, 0.0, 0.0}};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_positions{{0.0, 0.0, 0.0, 0.0}};
 
-  EXPECT_NEAR(10.0, TARGETS.front_left, 1e-6);
-  EXPECT_NEAR(10.0, TARGETS.front_right, 1e-6);
-  EXPECT_NEAR(10.0, TARGETS.rear_left, 1e-6);
-  EXPECT_NEAR(10.0, TARGETS.rear_right, 1e-6);
+  Kinematics kinematics(geometry);
+  const auto solution =
+      kinematics.ComputeWheelTargets(twist, steer_zero_offsets, steer_positions);
+
+  for (std::size_t index = 0; index < Kinematics::WHEEL_COUNT; ++index)
+  {
+    EXPECT_TRUE(solution.modules[index].active);
+    EXPECT_NEAR(0.0, solution.modules[index].steer_error, 1e-9);
+    EXPECT_NEAR(10.0, solution.modules[index].wheel_angular_velocity, 1e-6);
+  }
 }
 
-TEST(Kinematics, PureYaw)
+TEST(Kinematics, ComputeWheelTargetsFlipsWheelDirectionForShortestSteerPath)
 {
   Kinematics::Geometry geometry;
   geometry.wheel_base = 0.60;
   geometry.track_width = 0.40;
   geometry.wheel_radius = 0.10;
 
-  Kinematics kinematics(geometry);
-  const auto TARGETS = kinematics.ComputeWheelAngularVelocity(0.0, 0.0, 1.0);
-
-  EXPECT_NEAR(-5.0, TARGETS.front_left, 1e-6);
-  EXPECT_NEAR(5.0, TARGETS.front_right, 1e-6);
-  EXPECT_NEAR(-5.0, TARGETS.rear_left, 1e-6);
-  EXPECT_NEAR(5.0, TARGETS.rear_right, 1e-6);
-}
-
-TEST(Kinematics, LateralOnly)
-{
-  Kinematics::Geometry geometry;
-  geometry.wheel_radius = 0.10;
+  const Kinematics::ChassisTwist twist{0.0, 0.0, 1.0};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_zero_offsets{{0.0, 0.0, 0.0, 0.0}};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_positions{{0.0, 0.0, 0.0, 0.0}};
+  const double expected_speed = std::hypot(0.2, 0.3) / geometry.wheel_radius;
+  const double expected_error = std::atan2(0.3, 0.2);
 
   Kinematics kinematics(geometry);
-  const auto TARGETS = kinematics.ComputeWheelAngularVelocity(0.0, 1.0, 0.0);
+  const auto solution =
+      kinematics.ComputeWheelTargets(twist, steer_zero_offsets, steer_positions);
 
-  EXPECT_NEAR(-10.0, TARGETS.front_left, 1e-6);
-  EXPECT_NEAR(10.0, TARGETS.front_right, 1e-6);
-  EXPECT_NEAR(10.0, TARGETS.rear_left, 1e-6);
-  EXPECT_NEAR(-10.0, TARGETS.rear_right, 1e-6);
+  ASSERT_TRUE(solution.modules[0].active);
+  ASSERT_TRUE(solution.modules[1].active);
+  ASSERT_TRUE(solution.modules[2].active);
+  ASSERT_TRUE(solution.modules[3].active);
+  EXPECT_NEAR(-expected_error, solution.modules[0].steer_error, 1e-6);
+  EXPECT_NEAR(-expected_speed, solution.modules[0].wheel_angular_velocity, 1e-6);
+  EXPECT_NEAR(expected_error, solution.modules[1].steer_error, 1e-6);
+  EXPECT_NEAR(expected_speed, solution.modules[1].wheel_angular_velocity, 1e-6);
+  EXPECT_NEAR(expected_error, solution.modules[2].steer_error, 1e-6);
+  EXPECT_NEAR(-expected_speed, solution.modules[2].wheel_angular_velocity, 1e-6);
+  EXPECT_NEAR(-expected_error, solution.modules[3].steer_error, 1e-6);
+  EXPECT_NEAR(expected_speed, solution.modules[3].wheel_angular_velocity, 1e-6);
 }
 
-TEST(Kinematics, CombinedMotion)
+TEST(Kinematics, ComputeWheelTargetsHonorsDirectionSigns)
 {
   Kinematics::Geometry geometry;
-  geometry.wheel_base = 0.60;
-  geometry.track_width = 0.40;
-  geometry.wheel_radius = 0.10;
-
-  Kinematics kinematics(geometry);
-  const auto TARGETS = kinematics.ComputeWheelAngularVelocity(0.8, 0.2, 1.0);
-
-  EXPECT_NEAR(1.0, TARGETS.front_left, 1e-6);
-  EXPECT_NEAR(15.0, TARGETS.front_right, 1e-6);
-  EXPECT_NEAR(5.0, TARGETS.rear_left, 1e-6);
-  EXPECT_NEAR(11.0, TARGETS.rear_right, 1e-6);
-}
-
-TEST(Kinematics, DirectionSignsDefaultKeepsLegacyEquation)
-{
-  Kinematics::Geometry geometry;
-  geometry.wheel_base = 0.60;
-  geometry.track_width = 0.40;
-  geometry.wheel_radius = 0.10;
-
-  Kinematics kinematics(geometry);
-  const auto TARGETS = kinematics.ComputeWheelAngularVelocity(0.8, 0.2, 1.0);
-
-  EXPECT_NEAR(1.0, TARGETS.front_left, 1e-6);
-  EXPECT_NEAR(15.0, TARGETS.front_right, 1e-6);
-  EXPECT_NEAR(5.0, TARGETS.rear_left, 1e-6);
-  EXPECT_NEAR(11.0, TARGETS.rear_right, 1e-6);
-}
-
-TEST(Kinematics, DirectionSignsCustomMatrixAppliesPerAxis)
-{
-  Kinematics::Geometry geometry;
-  geometry.wheel_base = 0.60;
-  geometry.track_width = 0.40;
   geometry.wheel_radius = 0.10;
 
   Kinematics::DirectionSigns direction_signs;
   direction_signs.vx = {{1, 1, -1, -1}};
-  direction_signs.vy = {{-1, -1, 1, 1}};
-  direction_signs.wz = {{-1, -1, 1, 1}};
+
+  const Kinematics::ChassisTwist twist{1.0, 0.0, 0.0};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_zero_offsets{{0.0, 0.0, 0.0, 0.0}};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_positions{{0.0, 0.0, 0.0, 0.0}};
 
   Kinematics kinematics(geometry);
   kinematics.SetDirectionSigns(direction_signs);
+  const auto solution =
+      kinematics.ComputeWheelTargets(twist, steer_zero_offsets, steer_positions);
 
-  const auto VX_TARGETS = kinematics.ComputeWheelAngularVelocity(1.0, 0.0, 0.0);
-  EXPECT_NEAR(10.0, VX_TARGETS.front_left, 1e-6);
-  EXPECT_NEAR(10.0, VX_TARGETS.front_right, 1e-6);
-  EXPECT_NEAR(-10.0, VX_TARGETS.rear_left, 1e-6);
-  EXPECT_NEAR(-10.0, VX_TARGETS.rear_right, 1e-6);
-
-  const auto VY_TARGETS = kinematics.ComputeWheelAngularVelocity(0.0, 1.0, 0.0);
-  EXPECT_NEAR(10.0, VY_TARGETS.front_left, 1e-6);
-  EXPECT_NEAR(-10.0, VY_TARGETS.front_right, 1e-6);
-  EXPECT_NEAR(10.0, VY_TARGETS.rear_left, 1e-6);
-  EXPECT_NEAR(-10.0, VY_TARGETS.rear_right, 1e-6);
-
-  const auto WZ_TARGETS = kinematics.ComputeWheelAngularVelocity(0.0, 0.0, 1.0);
-  EXPECT_NEAR(5.0, WZ_TARGETS.front_left, 1e-6);
-  EXPECT_NEAR(-5.0, WZ_TARGETS.front_right, 1e-6);
-  EXPECT_NEAR(-5.0, WZ_TARGETS.rear_left, 1e-6);
-  EXPECT_NEAR(5.0, WZ_TARGETS.rear_right, 1e-6);
+  EXPECT_NEAR(10.0, solution.modules[0].wheel_angular_velocity, 1e-6);
+  EXPECT_NEAR(10.0, solution.modules[1].wheel_angular_velocity, 1e-6);
+  EXPECT_NEAR(-10.0, solution.modules[2].wheel_angular_velocity, 1e-6);
+  EXPECT_NEAR(-10.0, solution.modules[3].wheel_angular_velocity, 1e-6);
+  EXPECT_NEAR(0.0, solution.modules[2].steer_error, 1e-9);
+  EXPECT_NEAR(0.0, solution.modules[3].steer_error, 1e-9);
 }
 
 TEST(Kinematics, ForwardKinematicsRecoversKnownTwist)
@@ -179,21 +153,21 @@ TEST(Kinematics, ForwardKinematicsRecoversKnownTwist)
   geometry.track_width = 0.46;
   geometry.wheel_radius = 0.09;
 
-  const Kinematics::ChassisTwist EXPECTED_TWIST{0.8, -0.3, 1.2};
-  const std::array<double, 4> STEER_POSITIONS{{0.35, -0.4, 2.5, -2.1}};
-  const std::array<double, 4> STEER_ZERO_OFFSETS{{0.0, 0.0, 0.0, 0.0}};
-  const std::array<int, 4> WHEEL_ROLLING_SIGNS{{1, -1, -1, 1}};
+  const Kinematics::ChassisTwist expected_twist{0.8, -0.3, 1.2};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_positions{{0.35, -0.4, 2.5, -2.1}};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_zero_offsets{{0.0, 0.0, 0.0, 0.0}};
+  const std::array<int, Kinematics::WHEEL_COUNT> wheel_rolling_signs{{1, -1, -1, 1}};
 
   Kinematics kinematics(geometry);
-  const auto FEEDBACK = build_feedback_from_twist(
-      geometry, EXPECTED_TWIST, STEER_POSITIONS, STEER_ZERO_OFFSETS, WHEEL_ROLLING_SIGNS);
+  const auto feedback = build_feedback_from_twist(
+      geometry, expected_twist, steer_positions, steer_zero_offsets, wheel_rolling_signs);
 
   Kinematics::ChassisTwist solved_twist;
   ASSERT_TRUE(kinematics.ComputeChassisTwistFromWheelFeedback(
-      FEEDBACK, STEER_ZERO_OFFSETS, WHEEL_ROLLING_SIGNS, &solved_twist));
-  EXPECT_NEAR(EXPECTED_TWIST.vx, solved_twist.vx, 1e-6);
-  EXPECT_NEAR(EXPECTED_TWIST.vy, solved_twist.vy, 1e-6);
-  EXPECT_NEAR(EXPECTED_TWIST.wz, solved_twist.wz, 1e-6);
+      feedback, steer_zero_offsets, wheel_rolling_signs, &solved_twist));
+  EXPECT_NEAR(expected_twist.vx, solved_twist.vx, 1e-6);
+  EXPECT_NEAR(expected_twist.vy, solved_twist.vy, 1e-6);
+  EXPECT_NEAR(expected_twist.wz, solved_twist.wz, 1e-6);
 }
 
 TEST(Kinematics, ForwardKinematicsHonorsRollingSigns)
@@ -203,27 +177,27 @@ TEST(Kinematics, ForwardKinematicsHonorsRollingSigns)
   geometry.track_width = 0.46;
   geometry.wheel_radius = 0.09;
 
-  const Kinematics::ChassisTwist EXPECTED_TWIST{0.8, -0.3, 1.2};
-  const std::array<double, 4> STEER_POSITIONS{{0.35, -0.4, 2.5, -2.1}};
-  const std::array<double, 4> STEER_ZERO_OFFSETS{{0.0, 0.0, 0.0, 0.0}};
-  const std::array<int, 4> CORRECT_SIGNS{{1, -1, -1, 1}};
-  const std::array<int, 4> WRONG_SIGNS{{1, 1, 1, 1}};
+  const Kinematics::ChassisTwist expected_twist{0.8, -0.3, 1.2};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_positions{{0.35, -0.4, 2.5, -2.1}};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_zero_offsets{{0.0, 0.0, 0.0, 0.0}};
+  const std::array<int, Kinematics::WHEEL_COUNT> correct_signs{{1, -1, -1, 1}};
+  const std::array<int, Kinematics::WHEEL_COUNT> wrong_signs{{1, 1, 1, 1}};
 
   Kinematics kinematics(geometry);
-  const auto FEEDBACK = build_feedback_from_twist(
-      geometry, EXPECTED_TWIST, STEER_POSITIONS, STEER_ZERO_OFFSETS, CORRECT_SIGNS);
+  const auto feedback = build_feedback_from_twist(
+      geometry, expected_twist, steer_positions, steer_zero_offsets, correct_signs);
 
   Kinematics::ChassisTwist solved_correct;
   ASSERT_TRUE(kinematics.ComputeChassisTwistFromWheelFeedback(
-      FEEDBACK, STEER_ZERO_OFFSETS, CORRECT_SIGNS, &solved_correct));
-  EXPECT_NEAR(EXPECTED_TWIST.vx, solved_correct.vx, 1e-6);
-  EXPECT_NEAR(EXPECTED_TWIST.vy, solved_correct.vy, 1e-6);
-  EXPECT_NEAR(EXPECTED_TWIST.wz, solved_correct.wz, 1e-6);
+      feedback, steer_zero_offsets, correct_signs, &solved_correct));
+  EXPECT_NEAR(expected_twist.vx, solved_correct.vx, 1e-6);
+  EXPECT_NEAR(expected_twist.vy, solved_correct.vy, 1e-6);
+  EXPECT_NEAR(expected_twist.wz, solved_correct.wz, 1e-6);
 
   Kinematics::ChassisTwist solved_wrong;
   ASSERT_TRUE(kinematics.ComputeChassisTwistFromWheelFeedback(
-      FEEDBACK, STEER_ZERO_OFFSETS, WRONG_SIGNS, &solved_wrong));
-  EXPECT_GT(std::fabs(solved_wrong.vx - EXPECTED_TWIST.vx), 0.1);
+      feedback, steer_zero_offsets, wrong_signs, &solved_wrong));
+  EXPECT_GT(std::fabs(solved_wrong.vx - expected_twist.vx), 0.1);
 }
 
 TEST(Kinematics, ForwardKinematicsRejectsSingularSetup)
@@ -237,11 +211,12 @@ TEST(Kinematics, ForwardKinematicsRejectsSingularSetup)
   feedback.steer_position = {{0.0, 0.0, 0.0, 0.0}};
   feedback.wheel_angular_velocity = {{1.0, 1.0, 1.0, 1.0}};
 
-  const std::array<double, 4> STEER_ZERO_OFFSETS{{0.0, 0.0, 0.0, 0.0}};
-  const std::array<int, 4> ROLLING_SIGNS{{1, 1, 1, 1}};
+  const std::array<double, Kinematics::WHEEL_COUNT> steer_zero_offsets{{0.0, 0.0, 0.0, 0.0}};
+  const std::array<int, Kinematics::WHEEL_COUNT> rolling_signs{{1, 1, 1, 1}};
 
   Kinematics kinematics(geometry);
   Kinematics::ChassisTwist solved;
-  EXPECT_FALSE(kinematics.ComputeChassisTwistFromWheelFeedback(
-      feedback, STEER_ZERO_OFFSETS, ROLLING_SIGNS, &solved));
+  EXPECT_FALSE(
+      kinematics.ComputeChassisTwistFromWheelFeedback(feedback, steer_zero_offsets,
+                                                      rolling_signs, &solved));
 }

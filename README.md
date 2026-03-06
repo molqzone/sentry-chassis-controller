@@ -90,13 +90,13 @@
    - `linear.y`：左向为正
    - `angular.z`：绕 z 轴逆时针为正
 2. 轮序固定为：`front_left`、`front_right`、`rear_left`、`rear_right`。
-3. 逆运动学公式：
-   - `fl = (sx_fl*vx - sy_fl*vy - sz_fl*((wheel_base + track_width) / 2)*wz) / wheel_radius`
-   - `fr = (sx_fr*vx + sy_fr*vy + sz_fr*((wheel_base + track_width) / 2)*wz) / wheel_radius`
-   - `rl = (sx_rl*vx + sy_rl*vy - sz_rl*((wheel_base + track_width) / 2)*wz) / wheel_radius`
-   - `rr = (sx_rr*vx - sy_rr*vy + sz_rr*((wheel_base + track_width) / 2)*wz) / wheel_radius`
-4. 几何参数 `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
-   可直接在 `config/chassis_controller.yaml` 中配置并实时影响目标轮速解算。
+3. 控制器先按模块几何位置和 `wheel_direction_signs` 把底盘速度投影到每个舵轮模块的平面速度。
+4. 每个模块再解算：
+   - `target_steer = atan2(module_vy, module_vx) + steer_zero_offset`
+   - `target_wheel = hypot(module_vx, module_vy) / wheel_radius`
+   - 当舵角误差超过 `±90deg` 时，自动翻转轮速方向并折返舵角，保证最短转向路径。
+5. 几何参数 `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
+   可直接在 `config/chassis_controller.yaml` 中配置并实时影响舵角误差与轮目标解算。
 
 ## 轮向符号矩阵（wheel_direction_signs）
 

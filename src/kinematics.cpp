@@ -1,5 +1,7 @@
 #include "sentry_chassis_controller/kinematics.hpp"
 
+#include "controller_internal.hpp"
+
 #include <Eigen/Dense>
 
 #include <array>
@@ -10,8 +12,37 @@ namespace sentry_chassis_controller
 {
 namespace
 {
-constexpr double kMinWheelRadius = 1e-9;
 constexpr double kRankTolerance = 1e-9;
+
+double NormalizeAngle(double angle)
+{
+  return std::atan2(std::sin(angle), std::cos(angle));
+}
+
+std::array<std::pair<double, double>, Kinematics::WHEEL_COUNT> BuildModulePositions(
+    const Kinematics::Geometry& geometry)
+{
+  const double half_wheel_base = geometry.wheel_base * 0.5;
+  const double half_track_width = geometry.track_width * 0.5;
+  return {{
+      {half_wheel_base, half_track_width},
+      {half_wheel_base, -half_track_width},
+      {-half_wheel_base, half_track_width},
+      {-half_wheel_base, -half_track_width},
+  }};
+}
+
+Eigen::Vector2d ComputeModuleVelocity(const Kinematics::DirectionSigns& direction_signs,
+                                      std::size_t module_index, double module_x,
+                                      double module_y,
+                                      const Kinematics::ChassisTwist& twist)
+{
+  const double vx_sign = static_cast<double>(direction_signs.vx[module_index]);
+  const double vy_sign = static_cast<double>(direction_signs.vy[module_index]);
+  const double wz_sign = static_cast<double>(direction_signs.wz[module_index]);
+  return Eigen::Vector2d(vx_sign * twist.vx - wz_sign * module_y * twist.wz,
+                         vy_sign * twist.vy + wz_sign * module_x * twist.wz);
+}
 }  // namespace
 
 Kinematics::Kinematics() = default;
@@ -25,43 +56,56 @@ void Kinematics::SetDirectionSigns(const DirectionSigns& direction_signs)
   direction_signs_ = direction_signs;
 }
 
-Kinematics::WheelTargets Kinematics::ComputeWheelAngularVelocity(double vx, double vy,
-                                                                 double wz) const
+Kinematics::WheelTargetSolution Kinematics::ComputeWheelTargets(
+    const ChassisTwist& twist,
+    const std::array<double, WHEEL_COUNT>& steer_zero_offsets,
+    const std::array<double, WHEEL_COUNT>& steer_positions) const
 {
-  // Mecanum inverse kinematics in base_link, represented as:
-  // wheel_angular_velocity = (J * [vx, vy, wz]^T) / wheel_radius.
-  // Wheel order is fixed: front_left, front_right, rear_left, rear_right.
-  WheelTargets targets;
-  const double HALF_SUM = (geometry_.wheel_base + geometry_.track_width) * 0.5;
-  const double RADIUS = geometry_.wheel_radius > 1e-9 ? geometry_.wheel_radius : 1e-9;
-  const Eigen::Matrix<double, 4, 3> jacobian =
-      (Eigen::Matrix<double, 4, 3>() << static_cast<double>(direction_signs_.vx[0]),
-       -static_cast<double>(direction_signs_.vy[0]),
-       -static_cast<double>(direction_signs_.wz[0]) * HALF_SUM,
-       static_cast<double>(direction_signs_.vx[1]),
-       static_cast<double>(direction_signs_.vy[1]),
-       static_cast<double>(direction_signs_.wz[1]) * HALF_SUM,
-       static_cast<double>(direction_signs_.vx[2]),
-       static_cast<double>(direction_signs_.vy[2]),
-       -static_cast<double>(direction_signs_.wz[2]) * HALF_SUM,
-       static_cast<double>(direction_signs_.vx[3]),
-       -static_cast<double>(direction_signs_.vy[3]),
-       static_cast<double>(direction_signs_.wz[3]) * HALF_SUM)
-          .finished();
-  const Eigen::Vector3d chassis_velocity(vx, vy, wz);
-  const Eigen::Matrix<double, 4, 1> wheel_velocity = (jacobian * chassis_velocity) / RADIUS;
+  WheelTargetSolution solution;
+  const double wheel_radius =
+      geometry_.wheel_radius > MIN_WHEEL_RADIUS ? geometry_.wheel_radius : MIN_WHEEL_RADIUS;
+  const auto module_positions = BuildModulePositions(geometry_);
 
-  targets.front_left = wheel_velocity(0);
-  targets.front_right = wheel_velocity(1);
-  targets.rear_left = wheel_velocity(2);
-  targets.rear_right = wheel_velocity(3);
+  for (std::size_t index = 0; index < WHEEL_COUNT; ++index)
+  {
+    WheelTarget& target = solution.modules[index];
+    target.steer_error = NormalizeAngle(steer_zero_offsets[index] - steer_positions[index]);
 
-  return targets;
+    const Eigen::Vector2d module_velocity =
+        ComputeModuleVelocity(direction_signs_, index, module_positions[index].first,
+                              module_positions[index].second, twist);
+    const double module_speed = std::hypot(module_velocity.x(), module_velocity.y());
+    if (module_speed <= ZERO_CMD_EPS)
+    {
+      continue;
+    }
+
+    double steer_error = NormalizeAngle(
+        std::atan2(module_velocity.y(), module_velocity.x()) + steer_zero_offsets[index] -
+        steer_positions[index]);
+    double wheel_target = module_speed / wheel_radius;
+    if (steer_error > HALF_PI + STEER_FLIP_EPS)
+    {
+      steer_error -= PI;
+      wheel_target = -wheel_target;
+    }
+    else if (steer_error < -HALF_PI - STEER_FLIP_EPS)
+    {
+      steer_error += PI;
+      wheel_target = -wheel_target;
+    }
+
+    target.steer_error = steer_error;
+    target.wheel_angular_velocity = wheel_target;
+    target.active = true;
+  }
+  return solution;
 }
 
 bool Kinematics::ComputeChassisTwistFromWheelFeedback(
-    const WheelFeedback& feedback, const std::array<double, 4>& steer_zero_offsets,
-    const std::array<int, 4>& wheel_rolling_signs, ChassisTwist* twist) const
+    const WheelFeedback& feedback,
+    const std::array<double, WHEEL_COUNT>& steer_zero_offsets,
+    const std::array<int, WHEEL_COUNT>& wheel_rolling_signs, ChassisTwist* twist) const
 {
   if (twist == nullptr)
   {
@@ -69,21 +113,13 @@ bool Kinematics::ComputeChassisTwistFromWheelFeedback(
   }
 
   const double wheel_radius =
-      geometry_.wheel_radius > kMinWheelRadius ? geometry_.wheel_radius : kMinWheelRadius;
-  const double half_wheel_base = geometry_.wheel_base * 0.5;
-  const double half_track_width = geometry_.track_width * 0.5;
-
-  const std::array<std::pair<double, double>, 4> module_positions = {{
-      {half_wheel_base, half_track_width},
-      {half_wheel_base, -half_track_width},
-      {-half_wheel_base, half_track_width},
-      {-half_wheel_base, -half_track_width},
-  }};
+      geometry_.wheel_radius > MIN_WHEEL_RADIUS ? geometry_.wheel_radius : MIN_WHEEL_RADIUS;
+  const auto module_positions = BuildModulePositions(geometry_);
 
   Eigen::Matrix<double, 4, 3> a = Eigen::Matrix<double, 4, 3>::Zero();
   Eigen::Matrix<double, 4, 1> b = Eigen::Matrix<double, 4, 1>::Zero();
 
-  for (std::size_t index = 0; index < 4; ++index)
+  for (std::size_t index = 0; index < WHEEL_COUNT; ++index)
   {
     if (wheel_rolling_signs[index] != -1 && wheel_rolling_signs[index] != 1)
     {

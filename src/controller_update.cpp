@@ -15,9 +15,8 @@ namespace
 {
 struct WheelCommandContext
 {
-  Eigen::Vector3d command_input_base = Eigen::Vector3d::Zero();
-  Eigen::Matrix3d primary_compensation = Eigen::Matrix3d::Identity();
-  Eigen::Matrix3d steer_priority_compensation = Eigen::Matrix3d::Identity();
+  Kinematics::ChassisTwist primary_command_twist_base{};
+  Kinematics::ChassisTwist steer_priority_command_twist_base{};
   bool use_steer_priority = false;
   bool zero_command_requested = true;
   bool has_yaw_command = false;
@@ -61,14 +60,13 @@ WheelCommandContext ApplyWheelCommandConstraintsAndCompensation(
     double reverse_ccw_wz_gain)
 {
   WheelCommandContext context;
-  context.command_input_base = Eigen::Vector3d(
-      limited_command_twist_base.vx, limited_command_twist_base.vy,
-      limited_command_twist_base.wz);
+  const Eigen::Vector3d command_input_base(limited_command_twist_base.vx,
+                                           limited_command_twist_base.vy,
+                                           limited_command_twist_base.wz);
   const Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>>
       command_compensation_base(command_compensation_matrix.data());
-  context.primary_compensation = command_compensation_base;
-  Eigen::Vector3d command_effective =
-      context.primary_compensation * context.command_input_base;
+  Eigen::Matrix3d primary_compensation = command_compensation_base;
+  Eigen::Vector3d command_effective = primary_compensation * command_input_base;
   const controller_math::ReverseCompensationParams reverse_compensation_params{
       reverse_ccw_vy_threshold,
       reverse_ccw_vx_scale,
@@ -76,8 +74,10 @@ WheelCommandContext ApplyWheelCommandConstraintsAndCompensation(
       ZERO_CMD_EPS,
       REVERSE_STRAIGHT_VX_BOOST};
   controller_math::ApplyNonLinearReverseCompensation(reverse_compensation_params,
-                                                     &context.primary_compensation,
+                                                     &primary_compensation,
                                                      &command_effective);
+  context.primary_command_twist_base = {
+      command_effective.x(), command_effective.y(), command_effective.z()};
   context.zero_command_requested =
       std::fabs(command_effective.x()) < ZERO_CMD_EPS &&
       std::fabs(command_effective.y()) < ZERO_CMD_EPS &&
@@ -88,79 +88,23 @@ WheelCommandContext ApplyWheelCommandConstraintsAndCompensation(
       std::fabs(command_effective.y()) >= ZERO_CMD_EPS;
   context.use_steer_priority =
       ShouldEnableSteerPriorityMode(command_effective, reverse_ccw_vy_threshold);
-  context.steer_priority_compensation = context.primary_compensation;
-  context.steer_priority_compensation.row(0).setZero();
+
+  Eigen::Matrix3d steer_priority_compensation = primary_compensation;
+  steer_priority_compensation.row(0).setZero();
+  const Eigen::Vector3d steer_priority_effective =
+      steer_priority_compensation * command_input_base;
+  context.steer_priority_command_twist_base = {
+      steer_priority_effective.x(), steer_priority_effective.y(),
+      steer_priority_effective.z()};
   return context;
 }
 
-bool SolveModuleTarget(const WheelCommandContext& command_context,
-                       const Kinematics::DirectionSigns& direction_signs,
-                       std::size_t module_index, double module_x, double module_y,
-                       double steer_zero_offset, double steer_position,
-                       double wheel_radius, const Eigen::Matrix3d& compensation,
-                       double* steer_error, double* wheel_target)
-{
-  if (steer_error == nullptr || wheel_target == nullptr)
-  {
-    return false;
-  }
-  const double VX_SIGN = static_cast<double>(direction_signs.vx[module_index]);
-  const double VY_SIGN = static_cast<double>(direction_signs.vy[module_index]);
-  const double WZ_SIGN = static_cast<double>(direction_signs.wz[module_index]);
-  const Eigen::Matrix<double, 2, 3> MODULE_PROJECTION =
-      (Eigen::Matrix<double, 2, 3>() << VX_SIGN, 0.0, -WZ_SIGN * module_y, 0.0, VY_SIGN,
-       WZ_SIGN * module_x)
-          .finished();
-  const Eigen::Matrix<double, 2, 3> MODULE_JACOBIAN = MODULE_PROJECTION * compensation;
-  const Eigen::Vector2d MODULE_VELOCITY =
-      MODULE_JACOBIAN * command_context.command_input_base;
-  const double MODULE_VX = MODULE_VELOCITY.x();
-  const double MODULE_VY = MODULE_VELOCITY.y();
-  const double MODULE_SPEED = std::hypot(MODULE_VX, MODULE_VY);
-  if (MODULE_SPEED <= ZERO_CMD_EPS)
-  {
-    return false;
-  }
-
-  const double TARGET_STEER = std::atan2(MODULE_VY, MODULE_VX) + steer_zero_offset;
-  double solved_error =
-      SentryChassisController::NormalizeAngle(TARGET_STEER - steer_position);
-  double solved_target = MODULE_SPEED / wheel_radius;
-  if (solved_error > HALF_PI + STEER_FLIP_EPS)
-  {
-    solved_error -= PI;
-    solved_target = -solved_target;
-  }
-  else if (solved_error < -HALF_PI - STEER_FLIP_EPS)
-  {
-    solved_error += PI;
-    solved_target = -solved_target;
-  }
-  *steer_error = solved_error;
-  *wheel_target = solved_target;
-  return true;
-}
-
 WheelTargetPlan SolveWheelTargets(
-    const WheelCommandContext& command_context,
-    const Kinematics::DirectionSigns& direction_signs,
+    const WheelCommandContext& command_context, const Kinematics& kinematics,
     const std::array<double, SentryChassisController::WHEEL_COUNT>& steer_zero_offsets,
     const std::array<double, SentryChassisController::WHEEL_COUNT>& steer_positions,
-    const Kinematics::Geometry& geometry, double steer_priority_error_threshold)
+    double steer_priority_error_threshold)
 {
-  const double HALF_WHEEL_BASE = geometry.wheel_base * 0.5;
-  const double HALF_TRACK_WIDTH = geometry.track_width * 0.5;
-  const double WHEEL_RADIUS =
-      geometry.wheel_radius > MIN_WHEEL_RADIUS ? geometry.wheel_radius
-                                               : MIN_WHEEL_RADIUS;
-  const std::array<std::pair<double, double>, SentryChassisController::WHEEL_COUNT>
-      MODULE_POSITIONS = {{
-          {HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
-          {HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
-          {-HALF_WHEEL_BASE, HALF_TRACK_WIDTH},
-          {-HALF_WHEEL_BASE, -HALF_TRACK_WIDTH},
-      }};
-
   WheelTargetPlan target_plan;
   for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
   {
@@ -169,34 +113,36 @@ WheelTargetPlan SolveWheelTargets(
     target_plan.wheel_targets[i] = 0.0;
     target_plan.alignments[i] = 1.0;
     target_plan.wheel_pid_reset_flags[i] = command_context.zero_command_requested;
+  }
+  if (command_context.zero_command_requested)
+  {
+    return target_plan;
+  }
 
-    if (command_context.zero_command_requested)
-    {
-      continue;
-    }
+  const Kinematics::WheelTargetSolution primary_targets = kinematics.ComputeWheelTargets(
+      command_context.primary_command_twist_base, steer_zero_offsets, steer_positions);
+  const Kinematics::WheelTargetSolution steer_priority_targets =
+      command_context.use_steer_priority
+          ? kinematics.ComputeWheelTargets(command_context.steer_priority_command_twist_base,
+                                           steer_zero_offsets, steer_positions)
+          : Kinematics::WheelTargetSolution();
 
-    double steer_error = target_plan.steer_errors[i];
-    double wheel_target = 0.0;
-    bool has_module_target = SolveModuleTarget(
-        command_context, direction_signs, i, MODULE_POSITIONS[i].first,
-        MODULE_POSITIONS[i].second, steer_zero_offsets[i], steer_positions[i], WHEEL_RADIUS,
-        command_context.primary_compensation, &steer_error, &wheel_target);
-    if (has_module_target && command_context.use_steer_priority &&
-        std::fabs(steer_error) > steer_priority_error_threshold)
+  for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
+  {
+    const Kinematics::WheelTarget* selected_target = &primary_targets.modules[i];
+    if (selected_target->active && command_context.use_steer_priority &&
+        std::fabs(selected_target->steer_error) > steer_priority_error_threshold &&
+        steer_priority_targets.modules[i].active)
     {
-      has_module_target = SolveModuleTarget(
-          command_context, direction_signs, i, MODULE_POSITIONS[i].first,
-          MODULE_POSITIONS[i].second, steer_zero_offsets[i], steer_positions[i],
-          WHEEL_RADIUS, command_context.steer_priority_compensation, &steer_error,
-          &wheel_target);
+      selected_target = &steer_priority_targets.modules[i];
     }
-    if (has_module_target)
+    if (selected_target->active)
     {
-      target_plan.steer_errors[i] = steer_error;
-      target_plan.wheel_targets[i] = wheel_target;
+      target_plan.steer_errors[i] = selected_target->steer_error;
+      target_plan.wheel_targets[i] = selected_target->wheel_angular_velocity;
       target_plan.alignments[i] = ComputeWheelAlignment(
           command_context.has_yaw_command, command_context.has_translation_command,
-          steer_error);
+          selected_target->steer_error);
     }
     target_plan.wheel_pid_reset_flags[i] = false;
   }
@@ -1009,8 +955,7 @@ void SentryChassisController::ComputeAndApplyWheelControl(
       runtime_params.reverse_ccw_wz_gain);
   // Stage 2: per-wheel target solving (pure).
   const WheelTargetPlan TARGET_PLAN =
-      SolveWheelTargets(COMMAND_CONTEXT, direction_signs_, steer_zero_offsets_,
-                        steer_positions, applied_geometry_,
+      SolveWheelTargets(COMMAND_CONTEXT, kinematics_, steer_zero_offsets_, steer_positions,
                         runtime_params.reverse_ccw_steer_priority_error);
 
   // Stage 3 preparation: run stateful PID loops against solved targets.
