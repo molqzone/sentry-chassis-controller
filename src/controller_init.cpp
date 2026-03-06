@@ -111,28 +111,12 @@ bool SentryChassisController::LoadControllerConfig(
   std::copy_n(command_compensation_values.begin(), command_compensation_matrix_.size(),
               command_compensation_matrix_.begin());
 
-  geometry_.wheel_base = DEFAULT_WHEEL_BASE;
-  geometry_.track_width = DEFAULT_TRACK_WIDTH;
-  geometry_.wheel_radius = DEFAULT_WHEEL_RADIUS;
-  cmd_vel_timeout_ = DEFAULT_CMD_VEL_TIMEOUT;
-  command_velocity_mode_text_ = "base_link";
-  odom_startup_hold_sec_ = DEFAULT_ODOM_STARTUP_HOLD;
-  odom_max_linear_speed_ = DEFAULT_ODOM_MAX_LINEAR_SPEED;
-  odom_max_angular_speed_ = DEFAULT_ODOM_MAX_ANGULAR_SPEED;
-  wheel_effort_limit_ = DEFAULT_WHEEL_EFFORT_LIMIT;
-  reverse_ccw_vx_scale_ = DEFAULT_REVERSE_CCW_VX_SCALE;
-  reverse_ccw_wz_gain_ = DEFAULT_REVERSE_CCW_WZ_GAIN;
-  reverse_ccw_vy_threshold_ = DEFAULT_REVERSE_CCW_VY_THRESHOLD;
-  reverse_ccw_steer_priority_error_ = DEFAULT_REVERSE_CCW_STEER_PRIORITY_ERROR;
-  enable_acceleration_limits_ = DEFAULT_ENABLE_ACCELERATION_LIMITS;
-  max_linear_acceleration_ = DEFAULT_MAX_LINEAR_ACCELERATION;
-  max_angular_acceleration_ = DEFAULT_MAX_ANGULAR_ACCELERATION;
-  enable_power_limit_ = DEFAULT_ENABLE_POWER_LIMIT;
-  enable_power_limit_logging_ = DEFAULT_ENABLE_POWER_LIMIT_LOGGING;
-  max_power_ = DEFAULT_MAX_POWER;
-  power_loss_k1_ = DEFAULT_POWER_LOSS_K1;
-  power_loss_k2_ = DEFAULT_POWER_LOSS_K2;
-  min_power_scale_ = DEFAULT_MIN_POWER_SCALE;
+#define SENTRY_RUNTIME_PARAM_FIELD(type, field_name, default_value) \
+  field_name##_ = default_value;
+#include "sentry_chassis_controller/runtime_param_fields.inc"
+#undef SENTRY_RUNTIME_PARAM_FIELD
+  command_velocity_mode_text_ =
+      command_velocity_mode_ == CommandVelocityMode::BASE_LINK ? "base_link" : "global";
 
   ddynamic_reconfigure::DDynamicReconfigure parameter_loader(nh);
   parameter_loader.registerVariable<std::string>(

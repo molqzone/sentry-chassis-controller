@@ -32,6 +32,8 @@ struct WheelTargetPlan
   std::array<bool, SentryChassisController::WHEEL_COUNT> wheel_pid_reset_flags{};
 };
 
+constexpr int64_t DEFERRED_RT_WARN_FLUSH_INTERVAL_NS = 1000000000LL;
+
 bool ShouldEnableSteerPriorityMode(
     const Eigen::Vector3d& command_effective, double reverse_ccw_vy_threshold)
 {
@@ -534,6 +536,22 @@ void SentryChassisController::RefreshCommandTransformCache(
 
 void SentryChassisController::FlushDeferredRealtimeWarnings()
 {
+  const int64_t NOW_NS = static_cast<int64_t>(ros::WallTime::now().toNSec());
+  int64_t next_flush_time_ns =
+      rt_warn_next_flush_time_ns_.load(std::memory_order_relaxed);
+  if (NOW_NS < next_flush_time_ns)
+  {
+    return;
+  }
+  const int64_t NEXT_FLUSH_TIME_NS =
+      NOW_NS + DEFERRED_RT_WARN_FLUSH_INTERVAL_NS;
+  if (!rt_warn_next_flush_time_ns_.compare_exchange_strong(
+          next_flush_time_ns, NEXT_FLUSH_TIME_NS, std::memory_order_relaxed,
+          std::memory_order_relaxed))
+  {
+    return;
+  }
+
   const auto FLUSH_WARNING = [](std::atomic<uint32_t>* counter,
                                 const char* message) {
     const uint32_t COUNT = counter->exchange(0U, std::memory_order_relaxed);
@@ -558,8 +576,28 @@ void SentryChassisController::FlushDeferredRealtimeWarnings()
                 "Odom integration was suppressed by startup hold in realtime path");
   FLUSH_WARNING(&rt_warn_odom_rejected_count_,
                 "Abnormal odom twist was rejected in realtime path");
-  FLUSH_WARNING(&rt_warn_power_limit_active_count_,
-                "Power limit was active in realtime path");
+
+  const uint32_t POWER_LIMIT_COUNT =
+      rt_warn_power_limit_active_count_.exchange(0U, std::memory_order_relaxed);
+  if (POWER_LIMIT_COUNT > 0U)
+  {
+    const double LAST_PREDICTED_POWER_W =
+        static_cast<double>(rt_warn_power_limit_last_predicted_milliwatt_.load(
+            std::memory_order_relaxed)) /
+        1000.0;
+    const double LAST_MAX_POWER_W =
+        static_cast<double>(rt_warn_power_limit_last_max_milliwatt_.load(
+            std::memory_order_relaxed)) /
+        1000.0;
+    const double LAST_SCALE =
+        static_cast<double>(rt_warn_power_limit_last_scale_milli_.load(
+            std::memory_order_relaxed)) /
+        1000.0;
+    ROS_WARN(
+        "Power limit was active in realtime path (count=%u, "
+        "last_predicted=%.3fW, last_max=%.3fW, last_scale=%.3f).",
+        POWER_LIMIT_COUNT, LAST_PREDICTED_POWER_W, LAST_MAX_POWER_W, LAST_SCALE);
+  }
 }
 
 void SentryChassisController::ApplyRuntimeParamsInUpdate(
@@ -696,6 +734,15 @@ void SentryChassisController::ApplyPowerLimiting(
   if (runtime_params.enable_power_limit_logging)
   {
     rt_warn_power_limit_active_count_.fetch_add(1U, std::memory_order_relaxed);
+    rt_warn_power_limit_last_predicted_milliwatt_.store(
+        static_cast<int32_t>(std::round(PREDICTED_INPUT_POWER * 1000.0)),
+        std::memory_order_relaxed);
+    rt_warn_power_limit_last_max_milliwatt_.store(
+        static_cast<int32_t>(std::round(runtime_params.max_power * 1000.0)),
+        std::memory_order_relaxed);
+    rt_warn_power_limit_last_scale_milli_.store(
+        static_cast<int32_t>(std::round(scale * 1000.0)),
+        std::memory_order_relaxed);
   }
 }
 

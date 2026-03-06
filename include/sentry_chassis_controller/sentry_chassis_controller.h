@@ -551,6 +551,10 @@ class SentryChassisController
   std::atomic<uint32_t> rt_warn_odom_startup_hold_count_{0};
   std::atomic<uint32_t> rt_warn_odom_rejected_count_{0};
   std::atomic<uint32_t> rt_warn_power_limit_active_count_{0};
+  std::atomic<int32_t> rt_warn_power_limit_last_predicted_milliwatt_{0};
+  std::atomic<int32_t> rt_warn_power_limit_last_max_milliwatt_{0};
+  std::atomic<int32_t> rt_warn_power_limit_last_scale_milli_{1000};
+  std::atomic<int64_t> rt_warn_next_flush_time_ns_{0};
 };
 
 }  // namespace sentry_chassis_controller

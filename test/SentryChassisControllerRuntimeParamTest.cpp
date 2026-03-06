@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -192,6 +193,65 @@ class SentryChassisControllerRuntimeParamsTestAccessor
   static void SetEnablePowerLimitLogging(SentryChassisController* controller, bool enabled)
   {
     controller->enable_power_limit_logging_ = enabled;
+  }
+
+  static void FlushDeferredRealtimeWarnings(SentryChassisController* controller)
+  {
+    controller->FlushDeferredRealtimeWarnings();
+  }
+
+  static void SetDeferredWarningNextFlushNs(SentryChassisController* controller,
+                                            int64_t next_flush_time_ns)
+  {
+    controller->rt_warn_next_flush_time_ns_.store(
+        next_flush_time_ns, std::memory_order_relaxed);
+  }
+
+  static int64_t GetDeferredWarningNextFlushNs(
+      const SentryChassisController* controller)
+  {
+    return controller->rt_warn_next_flush_time_ns_.load(std::memory_order_relaxed);
+  }
+
+  static void SetInvalidPeriodWarningCount(SentryChassisController* controller,
+                                           uint32_t count)
+  {
+    controller->rt_warn_invalid_period_count_.store(
+        count, std::memory_order_relaxed);
+  }
+
+  static uint32_t GetInvalidPeriodWarningCount(
+      const SentryChassisController* controller)
+  {
+    return controller->rt_warn_invalid_period_count_.load(std::memory_order_relaxed);
+  }
+
+  static uint32_t GetPowerLimitWarningCount(
+      const SentryChassisController* controller)
+  {
+    return controller->rt_warn_power_limit_active_count_.load(
+        std::memory_order_relaxed);
+  }
+
+  static int32_t GetPowerLimitLastPredictedMilliwatt(
+      const SentryChassisController* controller)
+  {
+    return controller->rt_warn_power_limit_last_predicted_milliwatt_.load(
+        std::memory_order_relaxed);
+  }
+
+  static int32_t GetPowerLimitLastMaxMilliwatt(
+      const SentryChassisController* controller)
+  {
+    return controller->rt_warn_power_limit_last_max_milliwatt_.load(
+        std::memory_order_relaxed);
+  }
+
+  static int32_t GetPowerLimitLastScaleMilli(
+      const SentryChassisController* controller)
+  {
+    return controller->rt_warn_power_limit_last_scale_milli_.load(
+        std::memory_order_relaxed);
   }
 
   static void SetMaxPower(SentryChassisController* controller, double max_power)
@@ -463,10 +523,12 @@ class SentryChassisControllerRuntimeParamsTestAccessor
   static std::array<double, 4> ApplyPowerLimiting(
       SentryChassisController* controller, const std::array<double, 4>& signed_wheel_velocities,
       const std::array<double, 4>& input_signed_wheel_efforts, bool enable_power_limit,
-      double max_power, double power_loss_k1, double power_loss_k2, double min_power_scale)
+      bool enable_power_limit_logging, double max_power, double power_loss_k1,
+      double power_loss_k2, double min_power_scale)
   {
     SentryChassisController::RuntimeParams runtime_params;
     runtime_params.enable_power_limit = enable_power_limit;
+    runtime_params.enable_power_limit_logging = enable_power_limit_logging;
     runtime_params.max_power = max_power;
     runtime_params.power_loss_k1 = power_loss_k1;
     runtime_params.power_loss_k2 = power_loss_k2;
@@ -871,12 +933,74 @@ TEST(SentryChassisControllerRuntimeParams, ApplyPowerLimitingScalesEffortsWhenOv
   const std::array<double, 4> wheel_efforts = {{2.0, 2.0, 2.0, 2.0}};
   const auto limited_efforts =
       SentryChassisControllerRuntimeParamsTestAccessor::ApplyPowerLimiting(
-          &controller, wheel_velocities, wheel_efforts, true,
+          &controller, wheel_velocities, wheel_efforts, true, false,
           40.0, 0.0, 0.0, 0.3);
   EXPECT_NEAR(1.0, limited_efforts[0], 1e-9);
   EXPECT_NEAR(1.0, limited_efforts[1], 1e-9);
   EXPECT_NEAR(1.0, limited_efforts[2], 1e-9);
   EXPECT_NEAR(1.0, limited_efforts[3], 1e-9);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     FlushDeferredRealtimeWarningsHonorsFlushWindow)
+{
+  SentryChassisController controller;
+  SentryChassisControllerRuntimeParamsTestAccessor::SetInvalidPeriodWarningCount(
+      &controller, 3U);
+  const int64_t NOW_NS = static_cast<int64_t>(ros::WallTime::now().toNSec());
+  SentryChassisControllerRuntimeParamsTestAccessor::SetDeferredWarningNextFlushNs(
+      &controller, NOW_NS + 1000000000LL);
+  SentryChassisControllerRuntimeParamsTestAccessor::FlushDeferredRealtimeWarnings(
+      &controller);
+  EXPECT_EQ(
+      3U,
+      SentryChassisControllerRuntimeParamsTestAccessor::GetInvalidPeriodWarningCount(
+          &controller));
+
+  SentryChassisControllerRuntimeParamsTestAccessor::SetDeferredWarningNextFlushNs(
+      &controller, 0);
+  SentryChassisControllerRuntimeParamsTestAccessor::FlushDeferredRealtimeWarnings(
+      &controller);
+  EXPECT_EQ(
+      0U,
+      SentryChassisControllerRuntimeParamsTestAccessor::GetInvalidPeriodWarningCount(
+          &controller));
+  EXPECT_GT(
+      SentryChassisControllerRuntimeParamsTestAccessor::GetDeferredWarningNextFlushNs(
+          &controller),
+      NOW_NS);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     ApplyPowerLimitingRecordsDeferredWarningSnapshotWhenLoggingEnabled)
+{
+  SentryChassisController controller;
+  const std::array<double, 4> wheel_velocities = {{10.0, 10.0, 10.0, 10.0}};
+  const std::array<double, 4> wheel_efforts = {{2.0, 2.0, 2.0, 2.0}};
+  const auto limited_efforts =
+      SentryChassisControllerRuntimeParamsTestAccessor::ApplyPowerLimiting(
+          &controller, wheel_velocities, wheel_efforts, true, true,
+          40.0, 0.0, 0.0, 0.3);
+  EXPECT_LT(limited_efforts[0], wheel_efforts[0]);
+  EXPECT_EQ(
+      1U, SentryChassisControllerRuntimeParamsTestAccessor::GetPowerLimitWarningCount(
+              &controller));
+  EXPECT_GT(
+      SentryChassisControllerRuntimeParamsTestAccessor::
+          GetPowerLimitLastPredictedMilliwatt(&controller),
+      0);
+  EXPECT_EQ(
+      40000,
+      SentryChassisControllerRuntimeParamsTestAccessor::GetPowerLimitLastMaxMilliwatt(
+          &controller));
+  EXPECT_GT(
+      SentryChassisControllerRuntimeParamsTestAccessor::GetPowerLimitLastScaleMilli(
+          &controller),
+      0);
+  EXPECT_LE(
+      SentryChassisControllerRuntimeParamsTestAccessor::GetPowerLimitLastScaleMilli(
+          &controller),
+      1000);
 }
 
 }  // namespace sentry_chassis_controller
