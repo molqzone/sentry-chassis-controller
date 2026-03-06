@@ -247,8 +247,9 @@ bool SentryChassisController::ParseCommandVelocityMode(
 
 bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_validation)
 {
-  const std::string PREVIOUS_ODOM_FRAME_ID = runtime_params_shadow_.odom_frame_id;
-  const std::string PREVIOUS_BASE_FRAME_ID = runtime_params_shadow_.base_frame_id;
+  RuntimeParams& params = runtime_params_shadow_;
+  const std::string PREVIOUS_ODOM_FRAME_ID = params.odom_frame_id;
+  const std::string PREVIOUS_BASE_FRAME_ID = params.base_frame_id;
 
   struct PositiveFallbackRule
   {
@@ -275,16 +276,16 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
     double max;
   };
 
-  if (geometry_.wheel_radius < MIN_WHEEL_RADIUS)
+  if (params.geometry.wheel_radius < MIN_WHEEL_RADIUS)
   {
     ROS_WARN("Parameter 'geometry/wheel_radius' must be >= %.9f. Clamping to %.9f.",
              MIN_WHEEL_RADIUS, MIN_WHEEL_RADIUS);
-    geometry_.wheel_radius = MIN_WHEEL_RADIUS;
+    params.geometry.wheel_radius = MIN_WHEEL_RADIUS;
   }
 
   const std::array<NonNegativeZeroRule, 2> NON_NEGATIVE_ZERO_RULES = {{
-      {"cmd_vel_timeout", &cmd_vel_timeout_},
-      {"odom_startup_hold_sec", &odom_startup_hold_sec_},
+      {"cmd_vel_timeout", &params.cmd_vel_timeout},
+      {"odom_startup_hold_sec", &params.odom_startup_hold_sec},
   }};
   for (const auto& rule : NON_NEGATIVE_ZERO_RULES)
   {
@@ -296,13 +297,16 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   }
 
   const std::array<PositiveFallbackRule, 6> POSITIVE_FALLBACK_RULES = {{
-      {"odom_max_linear_speed", &odom_max_linear_speed_, DEFAULT_ODOM_MAX_LINEAR_SPEED},
-      {"odom_max_angular_speed", &odom_max_angular_speed_, DEFAULT_ODOM_MAX_ANGULAR_SPEED},
-      {"wheel_effort_limit", &wheel_effort_limit_, DEFAULT_WHEEL_EFFORT_LIMIT},
-      {"max_linear_acceleration", &max_linear_acceleration_, DEFAULT_MAX_LINEAR_ACCELERATION},
-      {"max_angular_acceleration", &max_angular_acceleration_,
+      {"odom_max_linear_speed", &params.odom_max_linear_speed,
+       DEFAULT_ODOM_MAX_LINEAR_SPEED},
+      {"odom_max_angular_speed", &params.odom_max_angular_speed,
+       DEFAULT_ODOM_MAX_ANGULAR_SPEED},
+      {"wheel_effort_limit", &params.wheel_effort_limit, DEFAULT_WHEEL_EFFORT_LIMIT},
+      {"max_linear_acceleration", &params.max_linear_acceleration,
+       DEFAULT_MAX_LINEAR_ACCELERATION},
+      {"max_angular_acceleration", &params.max_angular_acceleration,
        DEFAULT_MAX_ANGULAR_ACCELERATION},
-      {"max_power", &max_power_, DEFAULT_MAX_POWER},
+      {"max_power", &params.max_power, DEFAULT_MAX_POWER},
   }};
   for (const auto& rule : POSITIVE_FALLBACK_RULES)
   {
@@ -315,8 +319,8 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   }
 
   const std::array<NonNegativeFallbackRule, 2> NON_NEGATIVE_FALLBACK_RULES = {{
-      {"power_loss_k1", &power_loss_k1_, DEFAULT_POWER_LOSS_K1},
-      {"power_loss_k2", &power_loss_k2_, DEFAULT_POWER_LOSS_K2},
+      {"power_loss_k1", &params.power_loss_k1, DEFAULT_POWER_LOSS_K1},
+      {"power_loss_k2", &params.power_loss_k2, DEFAULT_POWER_LOSS_K2},
   }};
   for (const auto& rule : NON_NEGATIVE_FALLBACK_RULES)
   {
@@ -329,15 +333,15 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   }
 
   const std::array<RangeClampRule, 5> RANGE_CLAMP_RULES = {{
-      {"reverse_ccw_vx_scale", &reverse_ccw_vx_scale_, MIN_REVERSE_CCW_VX_SCALE,
+      {"reverse_ccw_vx_scale", &params.reverse_ccw_vx_scale, MIN_REVERSE_CCW_VX_SCALE,
        MAX_REVERSE_CCW_VX_SCALE},
-      {"reverse_ccw_wz_gain", &reverse_ccw_wz_gain_, MIN_REVERSE_CCW_WZ_GAIN,
+      {"reverse_ccw_wz_gain", &params.reverse_ccw_wz_gain, MIN_REVERSE_CCW_WZ_GAIN,
        MAX_REVERSE_CCW_WZ_GAIN},
-      {"reverse_ccw_vy_threshold", &reverse_ccw_vy_threshold_, MIN_REVERSE_CCW_VY_THRESHOLD,
-       MAX_REVERSE_CCW_VY_THRESHOLD},
-      {"reverse_ccw_steer_priority_error", &reverse_ccw_steer_priority_error_,
+      {"reverse_ccw_vy_threshold", &params.reverse_ccw_vy_threshold,
+       MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD},
+      {"reverse_ccw_steer_priority_error", &params.reverse_ccw_steer_priority_error,
        MIN_REVERSE_CCW_STEER_PRIORITY_ERROR, MAX_REVERSE_CCW_STEER_PRIORITY_ERROR},
-      {"min_power_scale", &min_power_scale_, MIN_POWER_SCALE, MAX_POWER_SCALE},
+      {"min_power_scale", &params.min_power_scale, MIN_POWER_SCALE, MAX_POWER_SCALE},
   }};
   for (const auto& rule : RANGE_CLAMP_RULES)
   {
@@ -349,7 +353,7 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
     }
   }
 
-  CommandVelocityMode parsed_mode = command_velocity_mode_;
+  CommandVelocityMode parsed_mode = params.command_velocity_mode;
   if (!ParseCommandVelocityMode(command_velocity_mode_text_, &parsed_mode))
   {
     if (strict_validation)
@@ -364,66 +368,63 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
         "Dynamic command_velocity_mode '%s' is invalid. Keeping previous mode.",
         command_velocity_mode_text_.c_str());
     command_velocity_mode_text_ =
-        command_velocity_mode_ == CommandVelocityMode::BASE_LINK ? "base_link" : "global";
-    parsed_mode = command_velocity_mode_;
+        params.command_velocity_mode == CommandVelocityMode::BASE_LINK ? "base_link"
+                                                                       : "global";
+    parsed_mode = params.command_velocity_mode;
   }
-  command_velocity_mode_ = parsed_mode;
+  params.command_velocity_mode = parsed_mode;
 
-  if (base_frame_id_.empty())
+  if (params.base_frame_id.empty())
   {
     ROS_WARN("Parameter 'base_frame_id' is empty. Falling back to 'base_link'.");
-    base_frame_id_ = "base_link";
+    params.base_frame_id = "base_link";
   }
-  if (odom_frame_id_.empty())
+  if (params.odom_frame_id.empty())
   {
     ROS_WARN("Parameter 'odom_frame_id' is empty. Falling back to 'odom'.");
-    odom_frame_id_ = "odom";
+    params.odom_frame_id = "odom";
   }
-  if (command_frame_id_.empty())
+  if (params.command_frame_id.empty())
   {
     const std::string FALLBACK_COMMAND_FRAME =
-        command_velocity_mode_ == CommandVelocityMode::BASE_LINK ? base_frame_id_
-                                                                 : odom_frame_id_;
+        params.command_velocity_mode == CommandVelocityMode::BASE_LINK
+            ? params.base_frame_id
+            : params.odom_frame_id;
     ROS_WARN("Parameter 'command_frame_id' is empty. Falling back to '%s'.",
              FALLBACK_COMMAND_FRAME.c_str());
-    command_frame_id_ = FALLBACK_COMMAND_FRAME;
+    params.command_frame_id = FALLBACK_COMMAND_FRAME;
   }
 
-  if (command_velocity_mode_ == CommandVelocityMode::BASE_LINK &&
-      command_frame_id_ != base_frame_id_)
+  if (params.command_velocity_mode == CommandVelocityMode::BASE_LINK &&
+      params.command_frame_id != params.base_frame_id)
   {
     ROS_WARN(
         "Parameter 'command_frame_id' is '%s' while command_velocity_mode is "
         "'base_link'. Falling back to '%s'.",
-        command_frame_id_.c_str(), base_frame_id_.c_str());
-    command_frame_id_ = base_frame_id_;
+        params.command_frame_id.c_str(), params.base_frame_id.c_str());
+    params.command_frame_id = params.base_frame_id;
   }
-  if (command_velocity_mode_ == CommandVelocityMode::GLOBAL &&
-      command_frame_id_ == base_frame_id_)
+  if (params.command_velocity_mode == CommandVelocityMode::GLOBAL &&
+      params.command_frame_id == params.base_frame_id)
   {
     ROS_WARN_THROTTLE(
         1.0,
         "command_velocity_mode is 'global' but command_frame_id equals base frame '%s'. "
         "Global transform will have no effect.",
-        base_frame_id_.c_str());
+        params.base_frame_id.c_str());
   }
   if (!strict_validation &&
-      (PREVIOUS_ODOM_FRAME_ID != odom_frame_id_ ||
-       PREVIOUS_BASE_FRAME_ID != base_frame_id_))
+      (PREVIOUS_ODOM_FRAME_ID != params.odom_frame_id ||
+       PREVIOUS_BASE_FRAME_ID != params.base_frame_id))
   {
     ROS_WARN(
         "Odometry frame parameters changed (odom: '%s' -> '%s', base: '%s' -> '%s'). "
         "Resetting accumulated odometry state.",
-        PREVIOUS_ODOM_FRAME_ID.c_str(), odom_frame_id_.c_str(),
-        PREVIOUS_BASE_FRAME_ID.c_str(), base_frame_id_.c_str());
+        PREVIOUS_ODOM_FRAME_ID.c_str(), params.odom_frame_id.c_str(),
+        PREVIOUS_BASE_FRAME_ID.c_str(), params.base_frame_id.c_str());
   }
 
-#define SENTRY_RUNTIME_PARAM_FIELD(type, field_name, default_value) \
-  runtime_params_shadow_.field_name = field_name##_;
-#include "sentry_chassis_controller/runtime_param_fields.inc"
-#undef SENTRY_RUNTIME_PARAM_FIELD
-
-  runtime_params_buffer_.writeFromNonRT(runtime_params_shadow_);
+  runtime_params_buffer_.writeFromNonRT(params);
   InvalidateCommandTransformCache();
   RefreshCommandTransformCache(ros::TimerEvent());
   return true;

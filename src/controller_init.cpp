@@ -37,31 +37,39 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
       "command_velocity_mode='%s', command_frame_id='%s', "
       "timeout=%.3fs.",
       cmd_vel_topic_.c_str(),
-      command_velocity_mode_ == CommandVelocityMode::BASE_LINK ? "base_link"
-                                                                : "global",
-      command_frame_id_.c_str(), cmd_vel_timeout_);
+      runtime_params_shadow_.command_velocity_mode == CommandVelocityMode::BASE_LINK
+          ? "base_link"
+          : "global",
+      runtime_params_shadow_.command_frame_id.c_str(),
+      runtime_params_shadow_.cmd_vel_timeout);
   ROS_INFO(
       "odometry output configured with topic='%s', odom_frame='%s', base_frame='%s', "
       "publish_tf=%s.",
-      odom_topic_.c_str(), odom_frame_id_.c_str(), base_frame_id_.c_str(),
-      publish_tf_ ? "true" : "false");
+      odom_topic_.c_str(), runtime_params_shadow_.odom_frame_id.c_str(),
+      runtime_params_shadow_.base_frame_id.c_str(),
+      runtime_params_shadow_.publish_tf ? "true" : "false");
   ROS_INFO(
       "odometry stabilization configured with startup_hold=%.3fs, max_linear=%.3fm/s, "
       "max_angular=%.3frad/s, integrate_on_timeout=%s.",
-      odom_startup_hold_sec_, odom_max_linear_speed_, odom_max_angular_speed_,
-      odom_integrate_on_timeout_ ? "true" : "false");
+      runtime_params_shadow_.odom_startup_hold_sec,
+      runtime_params_shadow_.odom_max_linear_speed,
+      runtime_params_shadow_.odom_max_angular_speed,
+      runtime_params_shadow_.odom_integrate_on_timeout ? "true" : "false");
   ROS_INFO(
       "acceleration limits configured with enabled=%s, max_linear=%.3fm/s^2, "
       "max_angular=%.3frad/s^2.",
-      enable_acceleration_limits_ ? "true" : "false", max_linear_acceleration_,
-      max_angular_acceleration_);
+      runtime_params_shadow_.enable_acceleration_limits ? "true" : "false",
+      runtime_params_shadow_.max_linear_acceleration,
+      runtime_params_shadow_.max_angular_acceleration);
   ROS_INFO(
       "power limiting configured with enabled=%s, logging=%s, max_power=%.3fW, "
       "k1=%.6f, k2=%.6f, min_scale=%.3f.",
-      enable_power_limit_ ? "true" : "false",
-      enable_power_limit_logging_ ? "true" : "false", max_power_, power_loss_k1_,
-      power_loss_k2_, min_power_scale_);
-  ROS_INFO("wheel effort command limit configured as %.3f.", wheel_effort_limit_);
+      runtime_params_shadow_.enable_power_limit ? "true" : "false",
+      runtime_params_shadow_.enable_power_limit_logging ? "true" : "false",
+      runtime_params_shadow_.max_power, runtime_params_shadow_.power_loss_k1,
+      runtime_params_shadow_.power_loss_k2, runtime_params_shadow_.min_power_scale);
+  ROS_INFO("wheel effort command limit configured as %.3f.",
+           runtime_params_shadow_.wheel_effort_limit);
   ROS_INFO(
       "wheel_direction_signs loaded: vx=[%d,%d,%d,%d], vy=[%d,%d,%d,%d], "
       "wz=[%d,%d,%d,%d].",
@@ -111,12 +119,11 @@ bool SentryChassisController::LoadControllerConfig(
   std::copy_n(command_compensation_values.begin(), command_compensation_matrix_.size(),
               command_compensation_matrix_.begin());
 
-#define SENTRY_RUNTIME_PARAM_FIELD(type, field_name, default_value) \
-  field_name##_ = default_value;
-#include "sentry_chassis_controller/runtime_param_fields.inc"
-#undef SENTRY_RUNTIME_PARAM_FIELD
+  runtime_params_shadow_ = RuntimeParams{};
   command_velocity_mode_text_ =
-      command_velocity_mode_ == CommandVelocityMode::BASE_LINK ? "base_link" : "global";
+      runtime_params_shadow_.command_velocity_mode == CommandVelocityMode::BASE_LINK
+          ? "base_link"
+          : "global";
 
   ddynamic_reconfigure::DDynamicReconfigure parameter_loader(nh);
   parameter_loader.registerVariable<std::string>(
@@ -168,86 +175,86 @@ void SentryChassisController::RegisterSharedRuntimeParameters(
       "Velocity command interpretation mode.", COMMAND_VELOCITY_MODE_OPTIONS,
       "base_link/global");
   parameter_loader->registerVariable<std::string>(
-      "command_frame_id", &command_frame_id_,
+      "command_frame_id", &runtime_params_shadow_.command_frame_id,
       boost::function<void(std::string)>(), "Velocity command frame id.",
       std::string(), std::string());
   parameter_loader->registerVariable<std::string>(
-      "odom_frame_id", &odom_frame_id_, boost::function<void(std::string)>(),
+      "odom_frame_id", &runtime_params_shadow_.odom_frame_id, boost::function<void(std::string)>(),
       "Odometry frame id.", std::string(), std::string());
   parameter_loader->registerVariable<std::string>(
-      "base_frame_id", &base_frame_id_, boost::function<void(std::string)>(),
+      "base_frame_id", &runtime_params_shadow_.base_frame_id, boost::function<void(std::string)>(),
       "Base frame id.", std::string(), std::string());
   parameter_loader->registerVariable<double>(
-      "cmd_vel_timeout", &cmd_vel_timeout_, "cmd_vel timeout in seconds.", 0.0, 10.0);
+      "cmd_vel_timeout", &runtime_params_shadow_.cmd_vel_timeout, "cmd_vel timeout in seconds.", 0.0, 10.0);
   parameter_loader->registerVariable<double>(
-      "odom_startup_hold_sec", &odom_startup_hold_sec_,
+      "odom_startup_hold_sec", &runtime_params_shadow_.odom_startup_hold_sec,
       "Startup hold window for odom integration.", 0.0, 20.0);
   parameter_loader->registerVariable<double>(
-      "odom_max_linear_speed", &odom_max_linear_speed_,
+      "odom_max_linear_speed", &runtime_params_shadow_.odom_max_linear_speed,
       "Maximum acceptable odom linear speed.", MIN_VALID_DT, 50.0);
   parameter_loader->registerVariable<double>(
-      "odom_max_angular_speed", &odom_max_angular_speed_,
+      "odom_max_angular_speed", &runtime_params_shadow_.odom_max_angular_speed,
       "Maximum acceptable odom angular speed.", MIN_VALID_DT, 100.0);
   parameter_loader->registerVariable<bool>(
-      "odom_integrate_on_timeout", &odom_integrate_on_timeout_,
+      "odom_integrate_on_timeout", &runtime_params_shadow_.odom_integrate_on_timeout,
       boost::function<void(bool)>(), "Integrate odom when cmd_vel times out.", false,
       true);
   parameter_loader->registerVariable<bool>(
-      "publish_tf", &publish_tf_, boost::function<void(bool)>(),
+      "publish_tf", &runtime_params_shadow_.publish_tf, boost::function<void(bool)>(),
       "Publish odom to base_link transform.", false, true);
   parameter_loader->registerVariable<double>(
-      "wheel_effort_limit", &wheel_effort_limit_,
+      "wheel_effort_limit", &runtime_params_shadow_.wheel_effort_limit,
       "Absolute wheel effort limit.", MIN_VALID_DT, 100.0);
   parameter_loader->registerVariable<double>(
-      "reverse_ccw_vx_scale", &reverse_ccw_vx_scale_,
+      "reverse_ccw_vx_scale", &runtime_params_shadow_.reverse_ccw_vx_scale,
       "Reverse-CCW compensation vx scale.", MIN_REVERSE_CCW_VX_SCALE,
       MAX_REVERSE_CCW_VX_SCALE);
   parameter_loader->registerVariable<double>(
-      "reverse_ccw_wz_gain", &reverse_ccw_wz_gain_,
+      "reverse_ccw_wz_gain", &runtime_params_shadow_.reverse_ccw_wz_gain,
       "Reverse-CCW compensation wz gain.", MIN_REVERSE_CCW_WZ_GAIN,
       MAX_REVERSE_CCW_WZ_GAIN);
   parameter_loader->registerVariable<double>(
-      "reverse_ccw_vy_threshold", &reverse_ccw_vy_threshold_,
+      "reverse_ccw_vy_threshold", &runtime_params_shadow_.reverse_ccw_vy_threshold,
       "Reverse-CCW compensation |vy| trigger threshold.",
       MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD);
   parameter_loader->registerVariable<double>(
-      "reverse_ccw_steer_priority_error", &reverse_ccw_steer_priority_error_,
+      "reverse_ccw_steer_priority_error", &runtime_params_shadow_.reverse_ccw_steer_priority_error,
       "Reverse-CCW steering-priority error threshold.",
       MIN_REVERSE_CCW_STEER_PRIORITY_ERROR, MAX_REVERSE_CCW_STEER_PRIORITY_ERROR);
   parameter_loader->registerVariable<bool>(
-      "enable_acceleration_limits", &enable_acceleration_limits_,
+      "enable_acceleration_limits", &runtime_params_shadow_.enable_acceleration_limits,
       boost::function<void(bool)>(), "Enable chassis acceleration limits.", false, true);
   parameter_loader->registerVariable<double>(
-      "max_linear_acceleration", &max_linear_acceleration_,
+      "max_linear_acceleration", &runtime_params_shadow_.max_linear_acceleration,
       "Maximum chassis linear acceleration in m/s^2.", MIN_ACCELERATION_LIMIT, 100.0);
   parameter_loader->registerVariable<double>(
-      "max_angular_acceleration", &max_angular_acceleration_,
+      "max_angular_acceleration", &runtime_params_shadow_.max_angular_acceleration,
       "Maximum chassis angular acceleration in rad/s^2.", MIN_ACCELERATION_LIMIT, 200.0);
   parameter_loader->registerVariable<bool>(
-      "enable_power_limit", &enable_power_limit_, boost::function<void(bool)>(),
+      "enable_power_limit", &runtime_params_shadow_.enable_power_limit, boost::function<void(bool)>(),
       "Enable wheel power limiting.", false, true);
   parameter_loader->registerVariable<bool>(
-      "enable_power_limit_logging", &enable_power_limit_logging_,
+      "enable_power_limit_logging", &runtime_params_shadow_.enable_power_limit_logging,
       boost::function<void(bool)>(), "Enable power limiting status logging.", false, true);
   parameter_loader->registerVariable<double>(
-      "max_power", &max_power_, "Maximum allowed wheel power in watts.",
+      "max_power", &runtime_params_shadow_.max_power, "Maximum allowed wheel power in watts.",
       MIN_POWER_LIMIT, 2000.0);
   parameter_loader->registerVariable<double>(
-      "power_loss_k1", &power_loss_k1_,
+      "power_loss_k1", &runtime_params_shadow_.power_loss_k1,
       "Quadratic torque loss coefficient for power model.", 0.0, 1.0);
   parameter_loader->registerVariable<double>(
-      "power_loss_k2", &power_loss_k2_,
+      "power_loss_k2", &runtime_params_shadow_.power_loss_k2,
       "Quadratic speed loss coefficient for power model.", 0.0, 1.0);
   parameter_loader->registerVariable<double>(
-      "min_power_scale", &min_power_scale_,
+      "min_power_scale", &runtime_params_shadow_.min_power_scale,
       "Lower bound for power limiting scale factor.", MIN_POWER_SCALE, MAX_POWER_SCALE);
   parameter_loader->registerVariable<double>(
-      "geometry/wheel_base", &geometry_.wheel_base, "Wheel base in meters.", 0.0, 5.0);
+      "geometry/wheel_base", &runtime_params_shadow_.geometry.wheel_base, "Wheel base in meters.", 0.0, 5.0);
   parameter_loader->registerVariable<double>(
-      "geometry/track_width", &geometry_.track_width, "Track width in meters.", 0.0,
+      "geometry/track_width", &runtime_params_shadow_.geometry.track_width, "Track width in meters.", 0.0,
       5.0);
   parameter_loader->registerVariable<double>(
-      "geometry/wheel_radius", &geometry_.wheel_radius, "Wheel radius in meters.",
+      "geometry/wheel_radius", &runtime_params_shadow_.geometry.wheel_radius, "Wheel radius in meters.",
       MIN_WHEEL_RADIUS, 1.0);
 }
 
@@ -305,7 +312,7 @@ void SentryChassisController::InitTfResources()
 {
   // Allocate TF resources in init() to avoid allocations inside realtime update().
   const bool RUNTIME_TF_RECONFIGURE = enable_dynamic_reconfigure_;
-  if (publish_tf_ || RUNTIME_TF_RECONFIGURE)
+  if (runtime_params_shadow_.publish_tf || RUNTIME_TF_RECONFIGURE)
   {
     tf_broadcaster_.reset(new tf2_ros::TransformBroadcaster());
   }
@@ -313,7 +320,8 @@ void SentryChassisController::InitTfResources()
   {
     tf_broadcaster_.reset();
   }
-  if (command_velocity_mode_ == CommandVelocityMode::GLOBAL || RUNTIME_TF_RECONFIGURE)
+  if (runtime_params_shadow_.command_velocity_mode == CommandVelocityMode::GLOBAL ||
+      RUNTIME_TF_RECONFIGURE)
   {
     tf_buffer_.reset(new tf2_ros::Buffer(ros::Duration(10.0)));
     tf_listener_.reset(new tf2_ros::TransformListener(*tf_buffer_));

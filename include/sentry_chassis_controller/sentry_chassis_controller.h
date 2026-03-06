@@ -177,9 +177,31 @@ class SentryChassisController
    */
   struct RuntimeParams
   {
-#define SENTRY_RUNTIME_PARAM_FIELD(type, name, default_value) type name = default_value;
-#include "sentry_chassis_controller/runtime_param_fields.inc"
-#undef SENTRY_RUNTIME_PARAM_FIELD
+    CommandVelocityMode command_velocity_mode = CommandVelocityMode::BASE_LINK;
+    std::string command_frame_id = "base_link";
+    std::string odom_frame_id = "odom";
+    std::string base_frame_id = "base_link";
+    double cmd_vel_timeout = 0.25;
+    double odom_startup_hold_sec = 1.0;
+    double odom_max_linear_speed = 8.0;
+    double odom_max_angular_speed = 16.0;
+    bool odom_integrate_on_timeout = false;
+    bool publish_tf = true;
+    double wheel_effort_limit = 12.0;
+    double reverse_ccw_vx_scale = 1.0;
+    double reverse_ccw_wz_gain = 1.0;
+    double reverse_ccw_vy_threshold = 0.03;
+    double reverse_ccw_steer_priority_error = 0.6;
+    bool enable_acceleration_limits = false;
+    double max_linear_acceleration = 3.0;
+    double max_angular_acceleration = 5.0;
+    bool enable_power_limit = false;
+    bool enable_power_limit_logging = false;
+    double max_power = 360.0;
+    double power_loss_k1 = 0.001;
+    double power_loss_k2 = 0.0001;
+    double min_power_scale = 0.3;
+    Kinematics::Geometry geometry{};
   };
 
   /**
@@ -467,7 +489,6 @@ class SentryChassisController
       direction_signs_{};  ///< 三轴符号矩阵缓存 Cached per-axis sign matrix
   std::array<int, WHEEL_COUNT> wheel_rolling_signs_{
       {1, 1, 1, 1}};                    ///< 轮速方向符号 Wheel rolling direction signs
-  Kinematics::Geometry geometry_{};     ///< 底盘几何参数缓存 Cached chassis geometry
   Kinematics kinematics_;               ///< 逆运动学求解器 Inverse kinematics solver
   ros::Subscriber cmd_vel_subscriber_;  ///< 速度指令订阅器 Velocity command subscriber
   ros::Publisher odom_publisher_;       ///< 里程计发布器 Odometry publisher
@@ -485,52 +506,12 @@ class SentryChassisController
   std::string cmd_vel_topic_ = "/cmd_vel";  ///< 指令话题 Command topic
   std::string command_velocity_mode_text_ =
       "base_link";  ///< 指令模式参数文本 Command mode parameter text
-  CommandVelocityMode command_velocity_mode_ =
-      CommandVelocityMode::BASE_LINK;  ///< 指令解析模式 Command interpretation mode
-  std::string command_frame_id_ = "base_link";  ///< 指令坐标系 Command frame id
-  double cmd_vel_timeout_ = 0.25;  ///< 指令超时阈值（秒） Command timeout in seconds
   bool enable_dynamic_reconfigure_ =
       true;                             ///< 是否启用动态调参 Enable dynamic reconfigure
   std::string odom_topic_ = "/odom";    ///< 里程计话题 Odometry topic
-  std::string odom_frame_id_ = "odom";  ///< 里程计父坐标系 Odom frame id
-  std::string base_frame_id_ = "base_link";  ///< 底盘坐标系 Base frame id
   Kinematics::Geometry applied_geometry_{};  ///< update线程生效几何参数 Runtime-applied geometry
   std::string applied_odom_frame_id_;        ///< 最近一次生效的 odom 帧 Last applied odom frame id
   std::string applied_base_frame_id_;        ///< 最近一次生效的 base 帧 Last applied base frame id
-  double odom_startup_hold_sec_ =
-      1.0;  ///< 启动静置窗口（秒） Startup settling window in seconds
-  double odom_max_linear_speed_ =
-      8.0;  ///< 里程计线速度上限（m/s） Odom linear speed limit in m/s
-  double odom_max_angular_speed_ =
-      16.0;  ///< 里程计角速度上限（rad/s） Odom angular speed limit in rad/s
-  bool odom_integrate_on_timeout_ =
-      false;  ///< 指令超时时是否继续积分 Odom integration when cmd times out
-  bool publish_tf_ = true;  ///< 是否发布 odom->base_link TF Whether to publish odom TF
-  double wheel_effort_limit_ =
-      12.0;  ///< 轮速回路输出限幅（绝对值） Wheel effort command limit (absolute)
-  double reverse_ccw_vx_scale_ =
-      1.0;  ///< 反向左转补偿：vx 缩放 Reverse-CCW compensation vx scale
-  double reverse_ccw_wz_gain_ =
-      1.0;  ///< 反向左转补偿：wz 增益 Reverse-CCW compensation wz gain
-  double reverse_ccw_vy_threshold_ =
-      0.03;  ///< 反向左转补偿触发阈值 Reverse-CCW compensation |vy| trigger threshold
-  double reverse_ccw_steer_priority_error_ =
-      0.6;  ///< 反向左转补偿：舵向优先误差阈值 Reverse-CCW steering-priority threshold
-  bool enable_acceleration_limits_ =
-      false;  ///< 是否启用底盘加速度限制 Enable chassis acceleration limits
-  double max_linear_acceleration_ =
-      3.0;  ///< 最大线加速度（m/s^2） Maximum linear acceleration in m/s^2
-  double max_angular_acceleration_ =
-      5.0;  ///< 最大角加速度（rad/s^2） Maximum angular acceleration in rad/s^2
-  bool enable_power_limit_ = false;  ///< 是否启用功率限制 Enable power limiting
-  bool enable_power_limit_logging_ =
-      false;  ///< 是否打印功率限制日志 Enable power-limit logging
-  double max_power_ = 360.0;  ///< 功率上限（W） Maximum power limit in watts
-  double power_loss_k1_ =
-      0.001;  ///< 力矩损耗项系数 Coefficient for torque-squared loss term
-  double power_loss_k2_ =
-      0.0001;  ///< 转速损耗项系数 Coefficient for velocity-squared loss term
-  double min_power_scale_ = 0.3;  ///< 功率限制最小缩放 Minimum power-limiting scale
   std::array<double, 9> command_compensation_matrix_{
       {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};  ///< 速度指令线性补偿矩阵 Row-major 3x3 command compensation matrix
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;               ///< TF 缓冲区 TF buffer

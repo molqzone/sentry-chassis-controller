@@ -106,93 +106,93 @@ class SentryChassisControllerRuntimeParamsTestAccessor
   static void SetCommandFrameId(SentryChassisController* controller,
                                 const std::string& command_frame_id)
   {
-    controller->command_frame_id_ = command_frame_id;
+    controller->runtime_params_shadow_.command_frame_id = command_frame_id;
   }
 
   static void SetBaseFrameId(SentryChassisController* controller,
                              const std::string& base_frame_id)
   {
-    controller->base_frame_id_ = base_frame_id;
+    controller->runtime_params_shadow_.base_frame_id = base_frame_id;
   }
 
   static void SetOdomFrameId(SentryChassisController* controller,
                              const std::string& odom_frame_id)
   {
-    controller->odom_frame_id_ = odom_frame_id;
+    controller->runtime_params_shadow_.odom_frame_id = odom_frame_id;
   }
 
   static void SetCmdVelTimeout(SentryChassisController* controller, double timeout)
   {
-    controller->cmd_vel_timeout_ = timeout;
+    controller->runtime_params_shadow_.cmd_vel_timeout = timeout;
   }
 
   static void SetOdomStartupHold(SentryChassisController* controller, double hold_seconds)
   {
-    controller->odom_startup_hold_sec_ = hold_seconds;
+    controller->runtime_params_shadow_.odom_startup_hold_sec = hold_seconds;
   }
 
   static void SetOdomMaxLinearSpeed(SentryChassisController* controller, double max_speed)
   {
-    controller->odom_max_linear_speed_ = max_speed;
+    controller->runtime_params_shadow_.odom_max_linear_speed = max_speed;
   }
 
   static void SetOdomMaxAngularSpeed(SentryChassisController* controller, double max_speed)
   {
-    controller->odom_max_angular_speed_ = max_speed;
+    controller->runtime_params_shadow_.odom_max_angular_speed = max_speed;
   }
 
   static void SetWheelEffortLimit(SentryChassisController* controller, double effort_limit)
   {
-    controller->wheel_effort_limit_ = effort_limit;
+    controller->runtime_params_shadow_.wheel_effort_limit = effort_limit;
   }
 
   static void SetReverseCcwVxScale(SentryChassisController* controller, double vx_scale)
   {
-    controller->reverse_ccw_vx_scale_ = vx_scale;
+    controller->runtime_params_shadow_.reverse_ccw_vx_scale = vx_scale;
   }
 
   static void SetReverseCcwWzGain(SentryChassisController* controller, double wz_gain)
   {
-    controller->reverse_ccw_wz_gain_ = wz_gain;
+    controller->runtime_params_shadow_.reverse_ccw_wz_gain = wz_gain;
   }
 
   static void SetReverseCcwVyThreshold(SentryChassisController* controller,
                                        double vy_threshold)
   {
-    controller->reverse_ccw_vy_threshold_ = vy_threshold;
+    controller->runtime_params_shadow_.reverse_ccw_vy_threshold = vy_threshold;
   }
 
   static void SetReverseCcwSteerPriorityError(
       SentryChassisController* controller, double steer_priority_error)
   {
-    controller->reverse_ccw_steer_priority_error_ = steer_priority_error;
+    controller->runtime_params_shadow_.reverse_ccw_steer_priority_error = steer_priority_error;
   }
 
   static void SetEnableAccelerationLimits(SentryChassisController* controller, bool enabled)
   {
-    controller->enable_acceleration_limits_ = enabled;
+    controller->runtime_params_shadow_.enable_acceleration_limits = enabled;
   }
 
   static void SetMaxLinearAcceleration(SentryChassisController* controller,
                                        double max_linear_acceleration)
   {
-    controller->max_linear_acceleration_ = max_linear_acceleration;
+    controller->runtime_params_shadow_.max_linear_acceleration = max_linear_acceleration;
   }
 
   static void SetMaxAngularAcceleration(SentryChassisController* controller,
                                         double max_angular_acceleration)
   {
-    controller->max_angular_acceleration_ = max_angular_acceleration;
+    controller->runtime_params_shadow_.max_angular_acceleration = max_angular_acceleration;
   }
 
   static void SetEnablePowerLimit(SentryChassisController* controller, bool enabled)
   {
-    controller->enable_power_limit_ = enabled;
+    controller->runtime_params_shadow_.enable_power_limit = enabled;
   }
 
   static void SetEnablePowerLimitLogging(SentryChassisController* controller, bool enabled)
   {
-    controller->enable_power_limit_logging_ = enabled;
+    controller->runtime_params_shadow_.enable_power_limit_logging = enabled;
   }
 
   static void FlushDeferredRealtimeWarnings(SentryChassisController* controller)
@@ -256,43 +256,46 @@ class SentryChassisControllerRuntimeParamsTestAccessor
 
   static void SetMaxPower(SentryChassisController* controller, double max_power)
   {
-    controller->max_power_ = max_power;
+    controller->runtime_params_shadow_.max_power = max_power;
   }
 
   static void SetPowerLossK1(SentryChassisController* controller, double power_loss_k1)
   {
-    controller->power_loss_k1_ = power_loss_k1;
+    controller->runtime_params_shadow_.power_loss_k1 = power_loss_k1;
   }
 
   static void SetPowerLossK2(SentryChassisController* controller, double power_loss_k2)
   {
-    controller->power_loss_k2_ = power_loss_k2;
+    controller->runtime_params_shadow_.power_loss_k2 = power_loss_k2;
   }
 
   static void SetMinPowerScale(SentryChassisController* controller, double min_power_scale)
   {
-    controller->min_power_scale_ = min_power_scale;
+    controller->runtime_params_shadow_.min_power_scale = min_power_scale;
   }
 
   static void SetOdomIntegrateOnTimeout(SentryChassisController* controller, bool enabled)
   {
-    controller->odom_integrate_on_timeout_ = enabled;
+    controller->runtime_params_shadow_.odom_integrate_on_timeout = enabled;
   }
 
   static void SetPublishTf(SentryChassisController* controller, bool enabled)
   {
-    controller->publish_tf_ = enabled;
+    controller->runtime_params_shadow_.publish_tf = enabled;
   }
 
   static void SetWheelRadius(SentryChassisController* controller, double wheel_radius)
   {
-    controller->geometry_.wheel_radius = wheel_radius;
+    controller->runtime_params_shadow_.geometry.wheel_radius = wheel_radius;
   }
 
   static void SetCommandVelocityMode(SentryChassisController* controller,
                                      SentryChassisController::CommandVelocityMode mode)
   {
-    controller->command_velocity_mode_ = mode;
+    controller->runtime_params_shadow_.command_velocity_mode = mode;
+    controller->command_velocity_mode_text_ =
+        mode == SentryChassisController::CommandVelocityMode::BASE_LINK ? "base_link"
+                                                                        : "global";
   }
 
   static const std::string& GetModeText(const SentryChassisController* controller)
@@ -440,6 +443,11 @@ class SentryChassisControllerRuntimeParamsTestAccessor
       const SentryChassisController::RuntimeParams& runtime_params)
   {
     controller->runtime_params_shadow_ = runtime_params;
+    controller->command_velocity_mode_text_ =
+        runtime_params.command_velocity_mode ==
+                SentryChassisController::CommandVelocityMode::BASE_LINK
+            ? "base_link"
+            : "global";
     controller->runtime_params_buffer_.initRT(runtime_params);
     controller->runtime_params_buffer_.writeFromNonRT(runtime_params);
   }
