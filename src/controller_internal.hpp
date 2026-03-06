@@ -55,6 +55,8 @@ constexpr double MAX_POWER_SCALE = 1.0;
 constexpr double REVERSE_STRAIGHT_VX_BOOST = 1.10;
 constexpr double MIN_QUATERNION_NORM = 1e-12;
 constexpr double COMMAND_TRANSFORM_CACHE_UPDATE_SEC = 0.01;
+constexpr double COMMAND_TRANSFORM_CACHE_MAX_AGE_SEC = 0.05;
+constexpr double ODOM_PUBLISH_FLUSH_SEC = 0.01;
 
 // Wheel order suffix must stay aligned with config and kinematics.
 static const std::array<std::string, SentryChassisController::WHEEL_COUNT>

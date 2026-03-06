@@ -442,7 +442,7 @@ void SentryChassisController::RefreshCommandTransformCache(
 {
   (void)event;
   FlushDeferredRealtimeWarnings();
-  const RuntimeParams* runtime_params = runtime_params_buffer_.readFromRT();
+  const RuntimeParams* runtime_params = runtime_params_buffer_.readFromNonRT();
   if (runtime_params == nullptr)
   {
     InvalidateCommandTransformCache();
@@ -571,6 +571,8 @@ void SentryChassisController::FlushDeferredRealtimeWarnings()
                 "Realtime update skipped because command preparation failed");
   FLUSH_WARNING(&rt_warn_transform_cache_unready_count_,
                 "Global command transform cache was not ready in realtime path");
+  FLUSH_WARNING(&rt_warn_transform_cache_stale_count_,
+                "Global command transform cache was stale in realtime path");
   FLUSH_WARNING(&rt_warn_odom_singular_count_,
                 "Forward kinematics was singular during realtime odometry");
   FLUSH_WARNING(&rt_warn_odom_startup_hold_count_,
@@ -599,6 +601,131 @@ void SentryChassisController::FlushDeferredRealtimeWarnings()
         "last_predicted=%.3fW, last_max=%.3fW, last_scale=%.3f).",
         POWER_LIMIT_COUNT, LAST_PREDICTED_POWER_W, LAST_MAX_POWER_W, LAST_SCALE);
   }
+}
+
+void SentryChassisController::InvalidateOdomPublishState()
+{
+  const uint64_t BEGIN_SEQUENCE = odom_publish_state_seq_.load(std::memory_order_relaxed);
+  odom_publish_state_seq_.store(BEGIN_SEQUENCE + 1U, std::memory_order_release);
+  odom_publish_stamp_ns_.store(0U, std::memory_order_relaxed);
+  odom_publish_x_.store(0.0, std::memory_order_relaxed);
+  odom_publish_y_.store(0.0, std::memory_order_relaxed);
+  odom_publish_yaw_.store(0.0, std::memory_order_relaxed);
+  odom_publish_vx_.store(0.0, std::memory_order_relaxed);
+  odom_publish_vy_.store(0.0, std::memory_order_relaxed);
+  odom_publish_wz_.store(0.0, std::memory_order_relaxed);
+  odom_publish_valid_.store(false, std::memory_order_relaxed);
+  odom_publish_state_seq_.store(BEGIN_SEQUENCE + 2U, std::memory_order_release);
+}
+
+void SentryChassisController::StageOdometryPublishState(
+    const ros::Time& time, const Kinematics::ChassisTwist& twist)
+{
+  const uint64_t BEGIN_SEQUENCE = odom_publish_state_seq_.load(std::memory_order_relaxed);
+  odom_publish_state_seq_.store(BEGIN_SEQUENCE + 1U, std::memory_order_release);
+  odom_publish_stamp_ns_.store(time.toNSec(), std::memory_order_relaxed);
+  odom_publish_x_.store(odom_state_.x, std::memory_order_relaxed);
+  odom_publish_y_.store(odom_state_.y, std::memory_order_relaxed);
+  odom_publish_yaw_.store(odom_state_.yaw, std::memory_order_relaxed);
+  odom_publish_vx_.store(twist.vx, std::memory_order_relaxed);
+  odom_publish_vy_.store(twist.vy, std::memory_order_relaxed);
+  odom_publish_wz_.store(twist.wz, std::memory_order_relaxed);
+  odom_publish_valid_.store(true, std::memory_order_relaxed);
+  odom_publish_state_seq_.store(BEGIN_SEQUENCE + 2U, std::memory_order_release);
+}
+
+bool SentryChassisController::TryReadOdometryPublishState(
+    OdomPublishState* snapshot) const
+{
+  if (snapshot == nullptr)
+  {
+    return false;
+  }
+
+  for (int attempt = 0; attempt < 3; ++attempt)
+  {
+    const uint64_t BEGIN_SEQUENCE =
+        odom_publish_state_seq_.load(std::memory_order_acquire);
+    if ((BEGIN_SEQUENCE & 1U) != 0U)
+    {
+      continue;
+    }
+
+    snapshot->stamp.fromNSec(odom_publish_stamp_ns_.load(std::memory_order_relaxed));
+    snapshot->odom_state.x = odom_publish_x_.load(std::memory_order_relaxed);
+    snapshot->odom_state.y = odom_publish_y_.load(std::memory_order_relaxed);
+    snapshot->odom_state.yaw = odom_publish_yaw_.load(std::memory_order_relaxed);
+    snapshot->twist.vx = odom_publish_vx_.load(std::memory_order_relaxed);
+    snapshot->twist.vy = odom_publish_vy_.load(std::memory_order_relaxed);
+    snapshot->twist.wz = odom_publish_wz_.load(std::memory_order_relaxed);
+    snapshot->valid = odom_publish_valid_.load(std::memory_order_relaxed);
+
+    const uint64_t END_SEQUENCE =
+        odom_publish_state_seq_.load(std::memory_order_acquire);
+    if (BEGIN_SEQUENCE == END_SEQUENCE && (END_SEQUENCE & 1U) == 0U)
+    {
+      snapshot->sequence = END_SEQUENCE;
+      return snapshot->valid;
+    }
+  }
+  return false;
+}
+
+void SentryChassisController::FlushOdometryPublishState(const ros::TimerEvent& event)
+{
+  (void)event;
+
+  OdomPublishState snapshot;
+  if (!TryReadOdometryPublishState(&snapshot) ||
+      snapshot.sequence == last_published_odom_sequence_)
+  {
+    return;
+  }
+
+  const RuntimeParams* runtime_params = runtime_params_buffer_.readFromNonRT();
+  if (runtime_params == nullptr)
+  {
+    return;
+  }
+
+  nav_msgs::Odometry odometry;
+  odometry.header.stamp = snapshot.stamp;
+  odometry.header.frame_id = runtime_params->odom_frame_id;
+  odometry.child_frame_id = runtime_params->base_frame_id;
+  odometry.pose.pose.position.x = snapshot.odom_state.x;
+  odometry.pose.pose.position.y = snapshot.odom_state.y;
+  odometry.pose.pose.position.z = 0.0;
+
+  tf2::Quaternion quaternion;
+  quaternion.setRPY(0.0, 0.0, snapshot.odom_state.yaw);
+  quaternion.normalize();
+
+  odometry.pose.pose.orientation.x = quaternion.x();
+  odometry.pose.pose.orientation.y = quaternion.y();
+  odometry.pose.pose.orientation.z = quaternion.z();
+  odometry.pose.pose.orientation.w = quaternion.w();
+  odometry.twist.twist.linear.x = snapshot.twist.vx;
+  odometry.twist.twist.linear.y = snapshot.twist.vy;
+  odometry.twist.twist.angular.z = snapshot.twist.wz;
+  if (odom_publisher_)
+  {
+    odom_publisher_.publish(odometry);
+  }
+
+  if (runtime_params->publish_tf && tf_broadcaster_)
+  {
+    geometry_msgs::TransformStamped transform;
+    transform.header.stamp = snapshot.stamp;
+    transform.header.frame_id = runtime_params->odom_frame_id;
+    transform.child_frame_id = runtime_params->base_frame_id;
+    transform.transform.translation.x = snapshot.odom_state.x;
+    transform.transform.translation.y = snapshot.odom_state.y;
+    transform.transform.translation.z = 0.0;
+    transform.transform.rotation = odometry.pose.pose.orientation;
+    tf_broadcaster_->sendTransform(transform);
+  }
+
+  last_published_odom_sequence_ = snapshot.sequence;
 }
 
 void SentryChassisController::ApplyRuntimeParamsInUpdate(
@@ -752,7 +879,6 @@ bool SentryChassisController::ResolveCommandInBaseFrame(const CommandData& comma
                                                         const RuntimeParams& runtime_params,
                                                         Kinematics::ChassisTwist* base_twist)
 {
-  (void)time;
   if (base_twist == nullptr)
   {
     return false;
@@ -773,6 +899,13 @@ bool SentryChassisController::ResolveCommandInBaseFrame(const CommandData& comma
   if (command_transform == nullptr || !command_transform->valid)
   {
     rt_warn_transform_cache_unready_count_.fetch_add(1U, std::memory_order_relaxed);
+    return false;
+  }
+  if (command_transform->stamp.isZero() ||
+      command_transform->stamp > time ||
+      (time - command_transform->stamp).toSec() > COMMAND_TRANSFORM_CACHE_MAX_AGE_SEC)
+  {
+    rt_warn_transform_cache_stale_count_.fetch_add(1U, std::memory_order_relaxed);
     return false;
   }
 
@@ -975,6 +1108,7 @@ void SentryChassisController::starting(const ros::Time& time)
 {
   ResetControllerOutputsAndPids();
   ResetControllerTrackingState(time);
+  InvalidateOdomPublishState();
 }
 
 void SentryChassisController::update(const ros::Time& time, const ros::Duration& period)
@@ -1013,7 +1147,7 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   ComputeAndApplyWheelControl(limited_command_twist_base, period, *runtime_params);
   const Kinematics::ChassisTwist ODOM_TWIST =
       ComputeAndIntegrateOdometry(time, DT, timeout, *runtime_params);
-  PublishOdometry(time, ODOM_TWIST, *runtime_params);
+  StageOdometryPublishState(time, ODOM_TWIST);
 }
 
 void SentryChassisController::stopping(const ros::Time& time)
@@ -1021,6 +1155,7 @@ void SentryChassisController::stopping(const ros::Time& time)
   (void)time;
   ResetControllerOutputsAndPids();
   ResetControllerTrackingState(ros::Time(0));
+  InvalidateOdomPublishState();
 }
 
 bool SentryChassisController::IsOdomTwistAcceptable(
@@ -1035,50 +1170,6 @@ bool SentryChassisController::IsOdomTwistAcceptable(
   const double ANGULAR_SPEED = std::fabs(twist.wz);
   return LINEAR_SPEED <= runtime_params.odom_max_linear_speed &&
          ANGULAR_SPEED <= runtime_params.odom_max_angular_speed;
-}
-
-void SentryChassisController::PublishOdometry(const ros::Time& time,
-                                              const Kinematics::ChassisTwist& twist,
-                                              const RuntimeParams& runtime_params)
-{
-  nav_msgs::Odometry odometry;
-  odometry.header.stamp = time;
-  odometry.header.frame_id = runtime_params.odom_frame_id;
-  odometry.child_frame_id = runtime_params.base_frame_id;
-  odometry.pose.pose.position.x = odom_state_.x;
-  odometry.pose.pose.position.y = odom_state_.y;
-  odometry.pose.pose.position.z = 0.0;
-
-  tf2::Quaternion quaternion;
-  quaternion.setRPY(0.0, 0.0, odom_state_.yaw);
-  quaternion.normalize();
-
-  odometry.pose.pose.orientation.x = quaternion.x();
-  odometry.pose.pose.orientation.y = quaternion.y();
-  odometry.pose.pose.orientation.z = quaternion.z();
-  odometry.pose.pose.orientation.w = quaternion.w();
-  odometry.twist.twist.linear.x = twist.vx;
-  odometry.twist.twist.linear.y = twist.vy;
-  odometry.twist.twist.angular.z = twist.wz;
-  if (odom_publisher_)
-  {
-    odom_publisher_.publish(odometry);
-  }
-
-  if (!runtime_params.publish_tf || !tf_broadcaster_)
-  {
-    return;
-  }
-
-  geometry_msgs::TransformStamped transform;
-  transform.header.stamp = time;
-  transform.header.frame_id = runtime_params.odom_frame_id;
-  transform.child_frame_id = runtime_params.base_frame_id;
-  transform.transform.translation.x = odom_state_.x;
-  transform.transform.translation.y = odom_state_.y;
-  transform.transform.translation.z = 0.0;
-  transform.transform.rotation = odometry.pose.pose.orientation;
-  tf_broadcaster_->sendTransform(transform);
 }
 
 }  // namespace sentry_chassis_controller

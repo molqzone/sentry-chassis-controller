@@ -217,6 +217,19 @@ class SentryChassisController
   };
 
   /**
+   * @brief  供非实时发布线程消费的里程计快照
+   *         Odometry snapshot consumed by non-realtime publishing
+   */
+  struct OdomPublishState
+  {
+    ros::Time stamp;
+    OdomState odom_state;
+    Kinematics::ChassisTwist twist;
+    uint64_t sequence = 0;
+    bool valid = false;
+  };
+
+  /**
    * @brief  `/cmd_vel` 订阅回调
    *         `/cmd_vel` subscriber callback
    * @param  message 速度指令消息 Incoming velocity command message
@@ -288,6 +301,12 @@ class SentryChassisController
    *         Initializes global-command TF cache refresh timer (non-RT thread)
    */
   void InitCommandTransformCacheTimer(ros::NodeHandle& nh);
+
+  /**
+   * @brief  初始化里程计非实时发布定时器
+   *         Initializes non-realtime odom publishing timer
+   */
+  void InitOdomPublishTimer(ros::NodeHandle& nh);
 
   /**
    * @brief  初始化运行时动态调参服务
@@ -466,14 +485,29 @@ class SentryChassisController
   void ResetControllerTrackingState(const ros::Time& start_time);
 
   /**
-   * @brief  发布当前里程计与 TF
-   *         Publishes current odometry and TF
-   * @param  time 当前控制时刻 Current control time
-   * @param  twist 本周期底盘速度 Current cycle chassis twist
-   * @param  runtime_params 实时参数快照 Runtime parameter snapshot
+   * @brief  将 odom 发布快照标记为无效
+   *         Marks staged odom publishing snapshot as invalid
    */
-  void PublishOdometry(const ros::Time& time, const Kinematics::ChassisTwist& twist,
-                       const RuntimeParams& runtime_params);
+  void InvalidateOdomPublishState();
+
+  /**
+   * @brief  将本周期里程计结果写入非实时发布快照
+   *         Stages current odometry result for non-realtime publishing
+   */
+  void StageOdometryPublishState(const ros::Time& time,
+                                 const Kinematics::ChassisTwist& twist);
+
+  /**
+   * @brief  尝试读取最近一次里程计发布快照
+   *         Tries to read latest odom publishing snapshot
+   */
+  bool TryReadOdometryPublishState(OdomPublishState* snapshot) const;
+
+  /**
+   * @brief  在非实时线程发布当前里程计与 TF
+   *         Publishes current odometry and TF in non-realtime context
+   */
+  void FlushOdometryPublishState(const ros::TimerEvent& event);
 
   std::array<hardware_interface::JointHandle, WHEEL_COUNT>
       steer_joints_;  ///< 舵向关节句柄 Steering joint handles
@@ -500,6 +534,7 @@ class SentryChassisController
       runtime_params_buffer_;  ///< 实时循环参数快照缓存 Runtime parameter snapshot buffer
   realtime_tools::RealtimeBuffer<CommandTransformCache> command_transform_buffer_;
   ros::Timer command_transform_cache_timer_;
+  ros::Timer odom_publish_timer_;
   std::unique_ptr<ddynamic_reconfigure::DDynamicReconfigure>
       controller_params_reconfigure_;       ///< 控制器参数动态调参服务 Controller param dynamic server
   RuntimeParams runtime_params_shadow_;     ///< 非实时线程参数缓存 Non-realtime parameter cache
@@ -517,6 +552,16 @@ class SentryChassisController
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;               ///< TF 缓冲区 TF buffer
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;  ///< TF 监听器 TF listener
   OdomState odom_state_;             ///< 累计里程计状态 Integrated odometry state
+  std::atomic<uint64_t> odom_publish_state_seq_{0};
+  std::atomic<uint64_t> odom_publish_stamp_ns_{0};
+  std::atomic<double> odom_publish_x_{0.0};
+  std::atomic<double> odom_publish_y_{0.0};
+  std::atomic<double> odom_publish_yaw_{0.0};
+  std::atomic<double> odom_publish_vx_{0.0};
+  std::atomic<double> odom_publish_vy_{0.0};
+  std::atomic<double> odom_publish_wz_{0.0};
+  std::atomic<bool> odom_publish_valid_{false};
+  uint64_t last_published_odom_sequence_ = 0;
   Kinematics::ChassisTwist
       last_limited_command_;  ///< 上次限幅后的底盘速度 Last acceleration-limited command
   bool has_last_limited_command_ =
@@ -528,6 +573,7 @@ class SentryChassisController
   std::atomic<uint32_t> rt_warn_command_buffer_unready_count_{0};
   std::atomic<uint32_t> rt_warn_prepare_command_failed_count_{0};
   std::atomic<uint32_t> rt_warn_transform_cache_unready_count_{0};
+  std::atomic<uint32_t> rt_warn_transform_cache_stale_count_{0};
   std::atomic<uint32_t> rt_warn_odom_singular_count_{0};
   std::atomic<uint32_t> rt_warn_odom_startup_hold_count_{0};
   std::atomic<uint32_t> rt_warn_odom_rejected_count_{0};

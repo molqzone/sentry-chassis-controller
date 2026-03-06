@@ -27,6 +27,7 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   InitRosInterfaces(nh);
   InitTfResources();
   InitCommandTransformCacheTimer(nh);
+  InitOdomPublishTimer(nh);
   if (!InitRuntimeDynamicReconfigure(nh))
   {
     return false;
@@ -295,6 +296,16 @@ void SentryChassisController::InitRealtimeState()
   command_transform_cache.valid = false;
   command_transform_buffer_.initRT(command_transform_cache);
   odom_state_ = OdomState();
+  odom_publish_state_seq_.store(0U, std::memory_order_relaxed);
+  odom_publish_stamp_ns_.store(0U, std::memory_order_relaxed);
+  odom_publish_x_.store(0.0, std::memory_order_relaxed);
+  odom_publish_y_.store(0.0, std::memory_order_relaxed);
+  odom_publish_yaw_.store(0.0, std::memory_order_relaxed);
+  odom_publish_vx_.store(0.0, std::memory_order_relaxed);
+  odom_publish_vy_.store(0.0, std::memory_order_relaxed);
+  odom_publish_wz_.store(0.0, std::memory_order_relaxed);
+  odom_publish_valid_.store(false, std::memory_order_relaxed);
+  last_published_odom_sequence_ = 0U;
   last_limited_command_ = Kinematics::ChassisTwist();
   has_last_limited_command_ = false;
   controller_start_time_ = ros::Time(0);
@@ -340,6 +351,14 @@ void SentryChassisController::InitCommandTransformCacheTimer(ros::NodeHandle& nh
       ros::Duration(COMMAND_TRANSFORM_CACHE_UPDATE_SEC),
       &SentryChassisController::RefreshCommandTransformCache, this);
   RefreshCommandTransformCache(ros::TimerEvent());
+}
+
+void SentryChassisController::InitOdomPublishTimer(ros::NodeHandle& nh)
+{
+  odom_publish_timer_.stop();
+  odom_publish_timer_ = nh.createTimer(ros::Duration(ODOM_PUBLISH_FLUSH_SEC),
+                                       &SentryChassisController::FlushOdometryPublishState,
+                                       this);
 }
 
 bool SentryChassisController::InitRuntimeDynamicReconfigure(ros::NodeHandle& nh)
