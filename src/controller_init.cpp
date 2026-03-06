@@ -158,8 +158,7 @@ bool SentryChassisController::LoadControllerConfig(
   }
   applied_geometry_ = runtime_params_shadow_.geometry;
   kinematics_.SetGeometry(applied_geometry_);
-  applied_odom_frame_id_ = runtime_params_shadow_.odom_frame_id;
-  applied_base_frame_id_ = runtime_params_shadow_.base_frame_id;
+  applied_odom_frame_config_version_ = runtime_params_shadow_.odom_frame_config_version;
   return true;
 }
 

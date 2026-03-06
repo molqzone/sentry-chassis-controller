@@ -318,24 +318,16 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     return controller->odom_state_;
   }
 
-  static void SetAppliedFrames(SentryChassisController* controller,
-                               const std::string& odom_frame_id,
-                               const std::string& base_frame_id)
+  static void SetAppliedOdomFrameConfigVersion(SentryChassisController* controller,
+                                              uint64_t version)
   {
-    controller->applied_odom_frame_id_ = odom_frame_id;
-    controller->applied_base_frame_id_ = base_frame_id;
+    controller->applied_odom_frame_config_version_ = version;
   }
 
-  static const std::string& GetAppliedOdomFrameId(
+  static uint64_t GetAppliedOdomFrameConfigVersion(
       const SentryChassisController* controller)
   {
-    return controller->applied_odom_frame_id_;
-  }
-
-  static const std::string& GetAppliedBaseFrameId(
-      const SentryChassisController* controller)
-  {
-    return controller->applied_base_frame_id_;
+    return controller->applied_odom_frame_config_version_;
   }
 
   static void ApplyRuntimeParamsInUpdate(
@@ -345,14 +337,11 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     controller->ApplyRuntimeParamsInUpdate(runtime_params);
   }
 
-  static void ApplyRuntimeParamsInUpdateWithFrames(
-      SentryChassisController* controller,
-      const std::string& odom_frame_id,
-      const std::string& base_frame_id)
+  static void ApplyRuntimeParamsInUpdateWithFrameVersion(
+      SentryChassisController* controller, uint64_t odom_frame_config_version)
   {
     SentryChassisController::RuntimeParams runtime_params;
-    runtime_params.odom_frame_id = odom_frame_id;
-    runtime_params.base_frame_id = base_frame_id;
+    runtime_params.odom_frame_config_version = odom_frame_config_version;
     controller->ApplyRuntimeParamsInUpdate(runtime_params);
   }
 
@@ -430,8 +419,7 @@ class SentryChassisControllerRuntimeParamsTestAccessor
         {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
     controller->kinematics_.SetDirectionSigns(controller->direction_signs_);
     controller->applied_geometry_ = Kinematics::Geometry();
-    controller->applied_odom_frame_id_ = "odom";
-    controller->applied_base_frame_id_ = "base_link";
+    controller->applied_odom_frame_config_version_ = 0U;
     controller->InvalidateOdomPublishState();
     controller->last_published_odom_sequence_ = 0U;
     for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
@@ -686,7 +674,7 @@ TEST(SentryChassisControllerRuntimeParams,
 }
 
 TEST(SentryChassisControllerRuntimeParams,
-     ValidateAndApplyControllerParamsBumpsOdomPublishConfigVersionWhenPublishSettingsChange)
+     ValidateAndApplyControllerParamsBumpsOdomConfigVersionsWhenPublishSettingsChange)
 {
   EnsureRosTimeInitialized();
   SentryChassisController controller;
@@ -696,7 +684,8 @@ TEST(SentryChassisControllerRuntimeParams,
   const auto* runtime_params =
       SentryChassisControllerRuntimeParamsTestAccessor::ReadRuntimeParams(&controller);
   ASSERT_NE(runtime_params, nullptr);
-  const uint64_t INITIAL_VERSION = runtime_params->odom_publish_config_version;
+  const uint64_t INITIAL_FRAME_VERSION = runtime_params->odom_frame_config_version;
+  const uint64_t INITIAL_PUBLISH_VERSION = runtime_params->odom_publish_config_version;
 
   SentryChassisControllerRuntimeParamsTestAccessor::SetBaseFrameId(&controller,
                                                                    "base_footprint");
@@ -705,7 +694,8 @@ TEST(SentryChassisControllerRuntimeParams,
   runtime_params =
       SentryChassisControllerRuntimeParamsTestAccessor::ReadRuntimeParams(&controller);
   ASSERT_NE(runtime_params, nullptr);
-  EXPECT_EQ(INITIAL_VERSION + 1U, runtime_params->odom_publish_config_version);
+  EXPECT_EQ(INITIAL_FRAME_VERSION + 1U, runtime_params->odom_frame_config_version);
+  EXPECT_EQ(INITIAL_PUBLISH_VERSION + 1U, runtime_params->odom_publish_config_version);
   EXPECT_EQ("base_footprint", runtime_params->base_frame_id);
 
   SentryChassisControllerRuntimeParamsTestAccessor::SetPublishTf(&controller, false);
@@ -714,31 +704,29 @@ TEST(SentryChassisControllerRuntimeParams,
   runtime_params =
       SentryChassisControllerRuntimeParamsTestAccessor::ReadRuntimeParams(&controller);
   ASSERT_NE(runtime_params, nullptr);
-  EXPECT_EQ(INITIAL_VERSION + 2U, runtime_params->odom_publish_config_version);
+  EXPECT_EQ(INITIAL_FRAME_VERSION + 1U, runtime_params->odom_frame_config_version);
+  EXPECT_EQ(INITIAL_PUBLISH_VERSION + 2U, runtime_params->odom_publish_config_version);
   EXPECT_FALSE(runtime_params->publish_tf);
 }
 
 TEST(SentryChassisControllerRuntimeParams,
-     ApplyRuntimeParamsInUpdateResetsOdometryWhenFrameIdsChange)
+     ApplyRuntimeParamsInUpdateResetsOdometryWhenFrameConfigVersionChanges)
 {
   EnsureRosTimeInitialized();
   SentryChassisController controller;
   SentryChassisControllerRuntimeParamsTestAccessor::SetOdomState(&controller, 1.5, -0.4, 0.8);
-  SentryChassisControllerRuntimeParamsTestAccessor::SetAppliedFrames(
-      &controller, "odom_old", "base_old");
+  SentryChassisControllerRuntimeParamsTestAccessor::SetAppliedOdomFrameConfigVersion(&controller,
+                                                                                     3U);
 
-  SentryChassisControllerRuntimeParamsTestAccessor::ApplyRuntimeParamsInUpdateWithFrames(
-      &controller, "odom_new", "base_new");
+  SentryChassisControllerRuntimeParamsTestAccessor::ApplyRuntimeParamsInUpdateWithFrameVersion(
+      &controller, 4U);
   const auto& odom_state =
       SentryChassisControllerRuntimeParamsTestAccessor::GetOdomState(&controller);
   EXPECT_DOUBLE_EQ(0.0, odom_state.x);
   EXPECT_DOUBLE_EQ(0.0, odom_state.y);
   EXPECT_DOUBLE_EQ(0.0, odom_state.yaw);
-  EXPECT_EQ("odom_new",
-            SentryChassisControllerRuntimeParamsTestAccessor::GetAppliedOdomFrameId(
-                &controller));
-  EXPECT_EQ("base_new",
-            SentryChassisControllerRuntimeParamsTestAccessor::GetAppliedBaseFrameId(
+  EXPECT_EQ(4U,
+            SentryChassisControllerRuntimeParamsTestAccessor::GetAppliedOdomFrameConfigVersion(
                 &controller));
 }
 

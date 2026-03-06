@@ -257,6 +257,9 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
                                          : params.base_frame_id;
   const bool PREVIOUS_PUBLISH_TF =
       previous_runtime_params != nullptr ? previous_runtime_params->publish_tf : params.publish_tf;
+  const uint64_t PREVIOUS_ODOM_FRAME_CONFIG_VERSION =
+      previous_runtime_params != nullptr ? previous_runtime_params->odom_frame_config_version
+                                         : params.odom_frame_config_version;
   const uint64_t PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION =
       previous_runtime_params != nullptr ? previous_runtime_params->odom_publish_config_version
                                          : params.odom_publish_config_version;
@@ -434,10 +437,15 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
         PREVIOUS_BASE_FRAME_ID.c_str(), params.base_frame_id.c_str());
   }
 
-  const bool ODOM_PUBLISH_CONFIG_CHANGED =
+  const bool ODOM_FRAME_CONFIG_CHANGED =
       PREVIOUS_ODOM_FRAME_ID != params.odom_frame_id ||
-      PREVIOUS_BASE_FRAME_ID != params.base_frame_id ||
-      PREVIOUS_PUBLISH_TF != params.publish_tf;
+      PREVIOUS_BASE_FRAME_ID != params.base_frame_id;
+  params.odom_frame_config_version = ODOM_FRAME_CONFIG_CHANGED
+                                         ? PREVIOUS_ODOM_FRAME_CONFIG_VERSION + 1U
+                                         : PREVIOUS_ODOM_FRAME_CONFIG_VERSION;
+
+  const bool ODOM_PUBLISH_CONFIG_CHANGED =
+      ODOM_FRAME_CONFIG_CHANGED || PREVIOUS_PUBLISH_TF != params.publish_tf;
   params.odom_publish_config_version = ODOM_PUBLISH_CONFIG_CHANGED
                                            ? PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION + 1U
                                            : PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION;
@@ -766,22 +774,12 @@ void SentryChassisController::ApplyRuntimeParamsInUpdate(
     kinematics_.SetGeometry(applied_geometry_);
   }
 
-  const bool FRAME_IDS_CHANGED =
-      !applied_odom_frame_id_.empty() && !applied_base_frame_id_.empty() &&
-      (runtime_params.odom_frame_id != applied_odom_frame_id_ ||
-       runtime_params.base_frame_id != applied_base_frame_id_);
-  if (FRAME_IDS_CHANGED)
+  const bool ODOM_FRAME_CONFIG_CHANGED =
+      runtime_params.odom_frame_config_version != applied_odom_frame_config_version_;
+  if (ODOM_FRAME_CONFIG_CHANGED)
   {
     odom_state_ = OdomState();
-  }
-
-  if (applied_odom_frame_id_ != runtime_params.odom_frame_id)
-  {
-    applied_odom_frame_id_ = runtime_params.odom_frame_id;
-  }
-  if (applied_base_frame_id_ != runtime_params.base_frame_id)
-  {
-    applied_base_frame_id_ = runtime_params.base_frame_id;
+    applied_odom_frame_config_version_ = runtime_params.odom_frame_config_version;
   }
 }
 

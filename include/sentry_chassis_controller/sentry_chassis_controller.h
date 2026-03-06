@@ -181,6 +181,7 @@ class SentryChassisController
     std::string command_frame_id = "base_link";
     std::string odom_frame_id = "odom";
     std::string base_frame_id = "base_link";
+    uint64_t odom_frame_config_version = 0;
     uint64_t odom_publish_config_version = 0;
     double cmd_vel_timeout = 0.25;
     double odom_startup_hold_sec = 1.0;
@@ -548,8 +549,7 @@ class SentryChassisController
       true;                             ///< 是否启用动态调参 Enable dynamic reconfigure
   std::string odom_topic_ = "/odom";    ///< 里程计话题 Odometry topic
   Kinematics::Geometry applied_geometry_{};  ///< update线程生效几何参数 Runtime-applied geometry
-  std::string applied_odom_frame_id_;        ///< 最近一次生效的 odom 帧 Last applied odom frame id
-  std::string applied_base_frame_id_;        ///< 最近一次生效的 base 帧 Last applied base frame id
+  uint64_t applied_odom_frame_config_version_ = 0;
   std::array<double, 9> command_compensation_matrix_{
       {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};  ///< 速度指令线性补偿矩阵 Row-major 3x3 command compensation matrix
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;               ///< TF 缓冲区 TF buffer
