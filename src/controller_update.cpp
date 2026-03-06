@@ -912,7 +912,8 @@ bool SentryChassisController::ResolveCommandInBaseFrame(const CommandData& comma
   source_twist.vy = command.vy;
   source_twist.wz = command.wz;
 
-  if (runtime_params.command_velocity_mode == CommandVelocityMode::BASE_LINK)
+  if (runtime_params.command_velocity_mode == CommandVelocityMode::BASE_LINK ||
+      runtime_params.command_frame_id == runtime_params.base_frame_id)
   {
     *base_twist = source_twist;
     return true;

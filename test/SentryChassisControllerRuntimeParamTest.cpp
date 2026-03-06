@@ -785,6 +785,20 @@ TEST(SentryChassisControllerRuntimeParams,
 }
 
 TEST(SentryChassisControllerRuntimeParams,
+     ResolveCommandInBaseFrameGlobalModeBypassesCacheWhenCommandFrameEqualsBaseFrame)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  Kinematics::ChassisTwist resolved;
+  ASSERT_TRUE(SentryChassisControllerRuntimeParamsTestAccessor::ResolveCommandInBaseFrame(
+      &controller, SentryChassisController::CommandVelocityMode::GLOBAL, "base_link",
+      "base_link", ros::Time(10.0), 0.6, -0.2, 0.4, &resolved));
+  EXPECT_DOUBLE_EQ(0.6, resolved.vx);
+  EXPECT_DOUBLE_EQ(-0.2, resolved.vy);
+  EXPECT_DOUBLE_EQ(0.4, resolved.wz);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
      ResolveCommandInBaseFrameGlobalModeUsesCachedTransform)
 {
   EnsureRosTimeInitialized();
