@@ -248,8 +248,18 @@ bool SentryChassisController::ParseCommandVelocityMode(
 bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_validation)
 {
   RuntimeParams& params = runtime_params_shadow_;
-  const std::string PREVIOUS_ODOM_FRAME_ID = params.odom_frame_id;
-  const std::string PREVIOUS_BASE_FRAME_ID = params.base_frame_id;
+  const RuntimeParams* previous_runtime_params = runtime_params_buffer_.readFromNonRT();
+  const std::string PREVIOUS_ODOM_FRAME_ID =
+      previous_runtime_params != nullptr ? previous_runtime_params->odom_frame_id
+                                         : params.odom_frame_id;
+  const std::string PREVIOUS_BASE_FRAME_ID =
+      previous_runtime_params != nullptr ? previous_runtime_params->base_frame_id
+                                         : params.base_frame_id;
+  const bool PREVIOUS_PUBLISH_TF =
+      previous_runtime_params != nullptr ? previous_runtime_params->publish_tf : params.publish_tf;
+  const uint64_t PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION =
+      previous_runtime_params != nullptr ? previous_runtime_params->odom_publish_config_version
+                                         : params.odom_publish_config_version;
 
   struct PositiveFallbackRule
   {
@@ -423,6 +433,14 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
         PREVIOUS_ODOM_FRAME_ID.c_str(), params.odom_frame_id.c_str(),
         PREVIOUS_BASE_FRAME_ID.c_str(), params.base_frame_id.c_str());
   }
+
+  const bool ODOM_PUBLISH_CONFIG_CHANGED =
+      PREVIOUS_ODOM_FRAME_ID != params.odom_frame_id ||
+      PREVIOUS_BASE_FRAME_ID != params.base_frame_id ||
+      PREVIOUS_PUBLISH_TF != params.publish_tf;
+  params.odom_publish_config_version = ODOM_PUBLISH_CONFIG_CHANGED
+                                           ? PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION + 1U
+                                           : PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION;
 
   runtime_params_buffer_.writeFromNonRT(params);
   InvalidateCommandTransformCache();
@@ -608,6 +626,7 @@ void SentryChassisController::InvalidateOdomPublishState()
   const uint64_t BEGIN_SEQUENCE = odom_publish_state_seq_.load(std::memory_order_relaxed);
   odom_publish_state_seq_.store(BEGIN_SEQUENCE + 1U, std::memory_order_release);
   odom_publish_stamp_ns_.store(0U, std::memory_order_relaxed);
+  odom_publish_state_config_version_.store(0U, std::memory_order_relaxed);
   odom_publish_x_.store(0.0, std::memory_order_relaxed);
   odom_publish_y_.store(0.0, std::memory_order_relaxed);
   odom_publish_yaw_.store(0.0, std::memory_order_relaxed);
@@ -619,11 +638,14 @@ void SentryChassisController::InvalidateOdomPublishState()
 }
 
 void SentryChassisController::StageOdometryPublishState(
-    const ros::Time& time, const Kinematics::ChassisTwist& twist)
+    const ros::Time& time, const Kinematics::ChassisTwist& twist,
+    const RuntimeParams& runtime_params)
 {
   const uint64_t BEGIN_SEQUENCE = odom_publish_state_seq_.load(std::memory_order_relaxed);
   odom_publish_state_seq_.store(BEGIN_SEQUENCE + 1U, std::memory_order_release);
   odom_publish_stamp_ns_.store(time.toNSec(), std::memory_order_relaxed);
+  odom_publish_state_config_version_.store(runtime_params.odom_publish_config_version,
+                                           std::memory_order_relaxed);
   odom_publish_x_.store(odom_state_.x, std::memory_order_relaxed);
   odom_publish_y_.store(odom_state_.y, std::memory_order_relaxed);
   odom_publish_yaw_.store(odom_state_.yaw, std::memory_order_relaxed);
@@ -652,6 +674,8 @@ bool SentryChassisController::TryReadOdometryPublishState(
     }
 
     snapshot->stamp.fromNSec(odom_publish_stamp_ns_.load(std::memory_order_relaxed));
+    snapshot->publish_config_version =
+        odom_publish_state_config_version_.load(std::memory_order_relaxed);
     snapshot->odom_state.x = odom_publish_x_.load(std::memory_order_relaxed);
     snapshot->odom_state.y = odom_publish_y_.load(std::memory_order_relaxed);
     snapshot->odom_state.yaw = odom_publish_yaw_.load(std::memory_order_relaxed);
@@ -683,7 +707,8 @@ void SentryChassisController::FlushOdometryPublishState(const ros::TimerEvent& e
   }
 
   const RuntimeParams* runtime_params = runtime_params_buffer_.readFromNonRT();
-  if (runtime_params == nullptr)
+  if (runtime_params == nullptr ||
+      snapshot.publish_config_version != runtime_params->odom_publish_config_version)
   {
     return;
   }
@@ -1147,7 +1172,7 @@ void SentryChassisController::update(const ros::Time& time, const ros::Duration&
   ComputeAndApplyWheelControl(limited_command_twist_base, period, *runtime_params);
   const Kinematics::ChassisTwist ODOM_TWIST =
       ComputeAndIntegrateOdometry(time, DT, timeout, *runtime_params);
-  StageOdometryPublishState(time, ODOM_TWIST);
+  StageOdometryPublishState(time, ODOM_TWIST, *runtime_params);
 }
 
 void SentryChassisController::stopping(const ros::Time& time)

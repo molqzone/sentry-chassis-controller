@@ -181,6 +181,7 @@ class SentryChassisController
     std::string command_frame_id = "base_link";
     std::string odom_frame_id = "odom";
     std::string base_frame_id = "base_link";
+    uint64_t odom_publish_config_version = 0;
     double cmd_vel_timeout = 0.25;
     double odom_startup_hold_sec = 1.0;
     double odom_max_linear_speed = 8.0;
@@ -226,6 +227,7 @@ class SentryChassisController
     OdomState odom_state;
     Kinematics::ChassisTwist twist;
     uint64_t sequence = 0;
+    uint64_t publish_config_version = 0;
     bool valid = false;
   };
 
@@ -495,7 +497,8 @@ class SentryChassisController
    *         Stages current odometry result for non-realtime publishing
    */
   void StageOdometryPublishState(const ros::Time& time,
-                                 const Kinematics::ChassisTwist& twist);
+                                 const Kinematics::ChassisTwist& twist,
+                                 const RuntimeParams& runtime_params);
 
   /**
    * @brief  尝试读取最近一次里程计发布快照
@@ -554,6 +557,7 @@ class SentryChassisController
   OdomState odom_state_;             ///< 累计里程计状态 Integrated odometry state
   std::atomic<uint64_t> odom_publish_state_seq_{0};
   std::atomic<uint64_t> odom_publish_stamp_ns_{0};
+  std::atomic<uint64_t> odom_publish_state_config_version_{0};
   std::atomic<double> odom_publish_x_{0.0};
   std::atomic<double> odom_publish_y_{0.0};
   std::atomic<double> odom_publish_yaw_{0.0};

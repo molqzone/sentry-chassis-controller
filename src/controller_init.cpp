@@ -298,6 +298,7 @@ void SentryChassisController::InitRealtimeState()
   odom_state_ = OdomState();
   odom_publish_state_seq_.store(0U, std::memory_order_relaxed);
   odom_publish_stamp_ns_.store(0U, std::memory_order_relaxed);
+  odom_publish_state_config_version_.store(0U, std::memory_order_relaxed);
   odom_publish_x_.store(0.0, std::memory_order_relaxed);
   odom_publish_y_.store(0.0, std::memory_order_relaxed);
   odom_publish_yaw_.store(0.0, std::memory_order_relaxed);
