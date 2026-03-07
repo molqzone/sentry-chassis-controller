@@ -579,6 +579,12 @@ class SentryChassisController
   void ResetControllerTrackingState(const ros::Time& start_time);
 
   /**
+   * @brief  重置 odom 发布状态与已发布序列游标
+   *         Resets staged odom publishing state and published-sequence cursor
+   */
+  void ResetOdomPublishingState();
+
+  /**
    * @brief  将 odom 发布快照标记为无效
    *         Marks staged odom publishing snapshot as invalid
    */

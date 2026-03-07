@@ -397,6 +397,11 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     controller->controller_start_time_ = start_time;
   }
 
+  static ros::Time GetControllerStartTime(const SentryChassisController* controller)
+  {
+    return controller->controller_start_time_;
+  }
+
   static bool GetLastCommandTimedOut(const SentryChassisController* controller)
   {
     return controller->last_command_timed_out_;
@@ -434,8 +439,8 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     controller->kinematics_.SetDirectionSigns(controller->direction_signs_);
     controller->applied_geometry_ = Kinematics::Geometry();
     controller->applied_odom_frame_config_version_ = 0U;
-    controller->InvalidateOdomPublishState();
-    controller->last_published_odom_sequence_ = 0U;
+    controller->ResetControllerTrackingState(ros::Time(0));
+    controller->ResetOdomPublishingState();
     for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
     {
       controller->steer_pids_[i].initPid(1.0, 0.0, 0.0, 1e9, -1e9, false);
@@ -514,6 +519,17 @@ class SentryChassisControllerRuntimeParamsTestAccessor
   static uint64_t GetLastPublishedOdomSequence(const SentryChassisController* controller)
   {
     return controller->last_published_odom_sequence_;
+  }
+
+  static void SetLastPublishedOdomSequence(SentryChassisController* controller,
+                                           uint64_t sequence)
+  {
+    controller->last_published_odom_sequence_ = sequence;
+  }
+
+  static void StartController(SentryChassisController* controller, const ros::Time& time)
+  {
+    controller->starting(time);
   }
 
   static bool ResolveCommandInBaseFrame(
@@ -1154,6 +1170,65 @@ TEST(SentryChassisControllerRuntimeParams,
   EXPECT_DOUBLE_EQ(0.0, odom_state.x);
   EXPECT_DOUBLE_EQ(0.0, odom_state.y);
   EXPECT_DOUBLE_EQ(0.0, odom_state.yaw);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     StartingResetsTrackingStateAndOdomPublishingCursor)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  UpdateJointStorage joint_storage;
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateJointHandles(
+      &controller, &joint_storage);
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateLoopDependencies(
+      &controller);
+
+  for (auto& command : joint_storage.steer_command)
+  {
+    command = 1.0;
+  }
+  for (auto& command : joint_storage.wheel_command)
+  {
+    command = -1.0;
+  }
+  SentryChassisControllerRuntimeParamsTestAccessor::SetOdomState(&controller, 1.0, 2.0, 3.0);
+  Kinematics::ChassisTwist last_limited_command;
+  last_limited_command.vx = 0.5;
+  last_limited_command.vy = -0.2;
+  last_limited_command.wz = 0.7;
+  SentryChassisControllerRuntimeParamsTestAccessor::SetAccelerationLimiterState(
+      &controller, last_limited_command);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetControllerStartTime(
+      &controller, ros::Time(5.0));
+  SentryChassisControllerRuntimeParamsTestAccessor::SetLastPublishedOdomSequence(
+      &controller, 42U);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::StartController(
+      &controller, ros::Time(10.0));
+
+  const auto& odom_state =
+      SentryChassisControllerRuntimeParamsTestAccessor::GetOdomState(&controller);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.x);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.y);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.yaw);
+  EXPECT_FALSE(
+      SentryChassisControllerRuntimeParamsTestAccessor::HasLastLimitedCommand(&controller));
+  EXPECT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::GetLastCommandTimedOut(&controller));
+  EXPECT_EQ(ros::Time(10.0),
+            SentryChassisControllerRuntimeParamsTestAccessor::GetControllerStartTime(
+                &controller));
+  EXPECT_EQ(0U,
+            SentryChassisControllerRuntimeParamsTestAccessor::GetLastPublishedOdomSequence(
+                &controller));
+  for (const auto command : joint_storage.steer_command)
+  {
+    EXPECT_DOUBLE_EQ(0.0, command);
+  }
+  for (const auto command : joint_storage.wheel_command)
+  {
+    EXPECT_DOUBLE_EQ(0.0, command);
+  }
 }
 
 TEST(SentryChassisControllerRuntimeParams,

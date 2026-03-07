@@ -363,13 +363,8 @@ void SentryChassisController::InitRealtimeState()
   command.valid = false;
   command_buffer_.initRT(command);
   command_transform_buffer_.initRT(BuildInvalidCommandTransformCache());
-  odom_state_ = OdomState();
-  InvalidateOdomPublishState();
-  last_published_odom_sequence_ = 0U;
-  last_limited_command_ = Kinematics::ChassisTwist();
-  has_last_limited_command_ = false;
-  controller_start_time_ = ros::Time(0);
-  last_command_timed_out_ = true;
+  ResetControllerTrackingState(ros::Time(0));
+  ResetOdomPublishingState();
 }
 
 void SentryChassisController::InitRosInterfaces(ros::NodeHandle& nh)

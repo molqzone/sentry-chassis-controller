@@ -1539,11 +1539,17 @@ void SentryChassisController::ResetControllerTrackingState(const ros::Time& star
   last_command_timed_out_ = true;
 }
 
+void SentryChassisController::ResetOdomPublishingState()
+{
+  InvalidateOdomPublishState();
+  last_published_odom_sequence_ = 0U;
+}
+
 void SentryChassisController::starting(const ros::Time& time)
 {
   ResetControllerOutputsAndPids();
   ResetControllerTrackingState(time);
-  InvalidateOdomPublishState();
+  ResetOdomPublishingState();
 }
 
 void SentryChassisController::update(const ros::Time& time, const ros::Duration& period)
@@ -1590,7 +1596,7 @@ void SentryChassisController::stopping(const ros::Time& time)
   (void)time;
   ResetControllerOutputsAndPids();
   ResetControllerTrackingState(ros::Time(0));
-  InvalidateOdomPublishState();
+  ResetOdomPublishingState();
 }
 
 bool SentryChassisController::IsOdomTwistAcceptable(
