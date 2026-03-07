@@ -535,82 +535,86 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
 
 void SentryChassisController::InvalidateCommandTransformCache()
 {
-  CommandTransformCache cache;
-  cache.valid = false;
-  command_transform_buffer_.writeFromNonRT(cache);
+  command_transform_buffer_.writeFromNonRT(BuildInvalidCommandTransformCache());
 }
 
-void SentryChassisController::RefreshCommandTransformCache(
-    const ros::TimerEvent& event)
+SentryChassisController::CommandTransformCache
+SentryChassisController::BuildInvalidCommandTransformCache() const
 {
-  (void)event;
-  FlushDeferredRealtimeWarnings();
-  const RuntimeParams* runtime_params = runtime_params_buffer_.readFromNonRT();
-  if (runtime_params == nullptr)
-  {
-    InvalidateCommandTransformCache();
-    return;
-  }
-
-  if (runtime_params->command_velocity_mode != CommandVelocityMode::GLOBAL)
-  {
-    InvalidateCommandTransformCache();
-    return;
-  }
-
   CommandTransformCache cache;
   cache.valid = false;
   cache.stamp = ros::Time(0);
-  if (runtime_params->command_frame_id == runtime_params->base_frame_id)
-  {
-    cache.valid = true;
-    cache.stamp = ros::Time::now();
-    cache.command_transform_config_version =
-        runtime_params->command_transform_config_version;
-    command_transform_buffer_.writeFromNonRT(cache);
-    return;
-  }
+  return cache;
+}
 
+SentryChassisController::CommandTransformCache
+SentryChassisController::BuildIdentityCommandTransformCache(
+    const RuntimeParams& runtime_params, const ros::Time& stamp) const
+{
+  CommandTransformCache cache;
+  cache.valid = true;
+  cache.stamp = stamp;
+  cache.command_transform_config_version =
+      runtime_params.command_transform_config_version;
+  return cache;
+}
+
+bool SentryChassisController::TryLookupCommandTransform(
+    const RuntimeParams& runtime_params,
+    geometry_msgs::TransformStamped* command_to_base_transform) const
+{
+  if (command_to_base_transform == nullptr)
+  {
+    return false;
+  }
   if (!tf_buffer_)
   {
     ROS_WARN_THROTTLE(
         1.0,
         "Global command mode requires TF listener, but tf_buffer is not initialized.");
-    InvalidateCommandTransformCache();
-    return;
+    return false;
   }
 
   std::string transform_error;
-  const bool TRANSFORM_READY = tf_buffer_->canTransform(
-      runtime_params->base_frame_id, runtime_params->command_frame_id,
-      ros::Time(0), ros::Duration(0.0), &transform_error);
-  if (!TRANSFORM_READY)
+  const bool transform_ready = tf_buffer_->canTransform(
+      runtime_params.base_frame_id, runtime_params.command_frame_id, ros::Time(0),
+      ros::Duration(0.0), &transform_error);
+  if (!transform_ready)
   {
     ROS_WARN_THROTTLE(1.0,
                       "Failed to refresh cmd_vel transform from '%s' to '%s': %s",
-                      runtime_params->command_frame_id.c_str(),
-                      runtime_params->base_frame_id.c_str(),
+                      runtime_params.command_frame_id.c_str(),
+                      runtime_params.base_frame_id.c_str(),
                       transform_error.c_str());
-    InvalidateCommandTransformCache();
-    return;
+    return false;
   }
 
-  geometry_msgs::TransformStamped command_to_base_transform;
   try
   {
-    command_to_base_transform = tf_buffer_->lookupTransform(
-        runtime_params->base_frame_id, runtime_params->command_frame_id,
+    *command_to_base_transform = tf_buffer_->lookupTransform(
+        runtime_params.base_frame_id, runtime_params.command_frame_id,
         ros::Time(0), ros::Duration(0.0));
   }
   catch (const tf2::TransformException& exception)
   {
     ROS_WARN_THROTTLE(1.0,
                       "Failed to refresh cmd_vel transform from '%s' to '%s': %s",
-                      runtime_params->command_frame_id.c_str(),
-                      runtime_params->base_frame_id.c_str(),
+                      runtime_params.command_frame_id.c_str(),
+                      runtime_params.base_frame_id.c_str(),
                       exception.what());
-    InvalidateCommandTransformCache();
-    return;
+    return false;
+  }
+  return true;
+}
+
+bool SentryChassisController::TryBuildCommandTransformCacheFromTransform(
+    const RuntimeParams& runtime_params,
+    const geometry_msgs::TransformStamped& command_to_base_transform,
+    CommandTransformCache* cache) const
+{
+  if (cache == nullptr)
+  {
+    return false;
   }
 
   Eigen::Matrix3d source_to_target_rotation;
@@ -621,24 +625,65 @@ void SentryChassisController::RefreshCommandTransformCache(
     ROS_WARN_THROTTLE(
         1.0,
         "Failed to refresh cmd_vel transform from '%s' to '%s': invalid quaternion.",
-        runtime_params->command_frame_id.c_str(),
-        runtime_params->base_frame_id.c_str());
-    InvalidateCommandTransformCache();
-    return;
+        runtime_params.command_frame_id.c_str(),
+        runtime_params.base_frame_id.c_str());
+    return false;
   }
 
+  *cache = BuildIdentityCommandTransformCache(runtime_params,
+                                              command_to_base_transform.header.stamp);
   for (int row = 0; row < 3; ++row)
   {
     for (int col = 0; col < 3; ++col)
     {
-      cache.rotation_matrix_row_major[static_cast<std::size_t>(row * 3 + col)] =
+      cache->rotation_matrix_row_major[static_cast<std::size_t>(row * 3 + col)] =
           source_to_target_rotation(row, col);
     }
   }
-  cache.valid = true;
-  cache.stamp = command_to_base_transform.header.stamp;
-  cache.command_transform_config_version =
-      runtime_params->command_transform_config_version;
+  return true;
+}
+
+bool SentryChassisController::TryBuildRefreshedCommandTransformCache(
+    const RuntimeParams& runtime_params, CommandTransformCache* cache) const
+{
+  if (cache == nullptr)
+  {
+    return false;
+  }
+  if (runtime_params.command_frame_id == runtime_params.base_frame_id)
+  {
+    *cache = BuildIdentityCommandTransformCache(runtime_params, ros::Time::now());
+    return true;
+  }
+
+  geometry_msgs::TransformStamped command_to_base_transform;
+  if (!TryLookupCommandTransform(runtime_params, &command_to_base_transform))
+  {
+    return false;
+  }
+  return TryBuildCommandTransformCacheFromTransform(runtime_params,
+                                                    command_to_base_transform, cache);
+}
+
+void SentryChassisController::RefreshCommandTransformCache(
+    const ros::TimerEvent& event)
+{
+  (void)event;
+  FlushDeferredRealtimeWarnings();
+  const RuntimeParams* runtime_params = runtime_params_buffer_.readFromNonRT();
+  if (runtime_params == nullptr ||
+      runtime_params->command_velocity_mode != CommandVelocityMode::GLOBAL)
+  {
+    InvalidateCommandTransformCache();
+    return;
+  }
+
+  CommandTransformCache cache;
+  if (!TryBuildRefreshedCommandTransformCache(*runtime_params, &cache))
+  {
+    InvalidateCommandTransformCache();
+    return;
+  }
   command_transform_buffer_.writeFromNonRT(cache);
 }
 

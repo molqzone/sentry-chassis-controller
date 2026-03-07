@@ -481,6 +481,11 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     return cache != nullptr ? *cache : SentryChassisController::CommandTransformCache();
   }
 
+  static void RefreshCommandTransformCache(SentryChassisController* controller)
+  {
+    controller->RefreshCommandTransformCache(ros::TimerEvent());
+  }
+
   static bool ReadOdomPublishState(SentryChassisController* controller,
                                    OdomPublishState* snapshot)
   {
@@ -842,6 +847,84 @@ TEST(SentryChassisControllerRuntimeParams, ApplyAccelerationLimitsBoundsDeltaPer
   EXPECT_NEAR(1.1, second_output.vx, 1e-9);
   EXPECT_NEAR(0.0, second_output.vy, 1e-9);
   EXPECT_NEAR(1.2, second_output.wz, 1e-9);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     RefreshCommandTransformCacheInvalidatesCacheWhenModeIsNotGlobal)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  SentryChassisControllerRuntimeParamsTestAccessor::RuntimeParams runtime_params;
+  runtime_params.command_velocity_mode =
+      SentryChassisController::CommandVelocityMode::BASE_LINK;
+  runtime_params.command_frame_id = "base_link";
+  runtime_params.base_frame_id = "base_link";
+  runtime_params.command_transform_config_version = 7U;
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteRuntimeParamsSnapshot(&controller,
+                                                                              runtime_params);
+  const std::array<double, 9> identity_rotation = {
+      {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+  SentryChassisControllerRuntimeParamsTestAccessor::SetCommandTransformCache(
+      &controller, identity_rotation, ros::Time(1.0), true, 7U);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RefreshCommandTransformCache(&controller);
+
+  const auto cache =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadCommandTransformCache(&controller);
+  EXPECT_FALSE(cache.valid);
+  EXPECT_TRUE(cache.stamp.isZero());
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     RefreshCommandTransformCacheBuildsIdentityCacheWhenFramesMatch)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  SentryChassisControllerRuntimeParamsTestAccessor::RuntimeParams runtime_params;
+  runtime_params.command_velocity_mode =
+      SentryChassisController::CommandVelocityMode::GLOBAL;
+  runtime_params.command_frame_id = "base_link";
+  runtime_params.base_frame_id = "base_link";
+  runtime_params.command_transform_config_version = 9U;
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteRuntimeParamsSnapshot(&controller,
+                                                                              runtime_params);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RefreshCommandTransformCache(&controller);
+
+  const auto cache =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadCommandTransformCache(&controller);
+  const std::array<double, 9> identity_rotation = {
+      {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+  EXPECT_TRUE(cache.valid);
+  EXPECT_EQ(9U, cache.command_transform_config_version);
+  EXPECT_FALSE(cache.stamp.isZero());
+  EXPECT_EQ(identity_rotation, cache.rotation_matrix_row_major);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     RefreshCommandTransformCacheInvalidatesCacheWhenTfBufferIsMissing)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  SentryChassisControllerRuntimeParamsTestAccessor::RuntimeParams runtime_params;
+  runtime_params.command_velocity_mode =
+      SentryChassisController::CommandVelocityMode::GLOBAL;
+  runtime_params.command_frame_id = "odom";
+  runtime_params.base_frame_id = "base_link";
+  runtime_params.command_transform_config_version = 11U;
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteRuntimeParamsSnapshot(&controller,
+                                                                              runtime_params);
+  const std::array<double, 9> identity_rotation = {
+      {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+  SentryChassisControllerRuntimeParamsTestAccessor::SetCommandTransformCache(
+      &controller, identity_rotation, ros::Time(1.0), true, 11U);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RefreshCommandTransformCache(&controller);
+
+  const auto cache =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadCommandTransformCache(&controller);
+  EXPECT_FALSE(cache.valid);
+  EXPECT_TRUE(cache.stamp.isZero());
 }
 
 TEST(SentryChassisControllerRuntimeParams,

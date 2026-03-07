@@ -426,6 +426,42 @@ class SentryChassisController
   void InvalidateCommandTransformCache();
 
   /**
+   * @brief  构造无效的全局指令 TF 缓存快照
+   *         Builds an invalid global-command TF cache snapshot
+   */
+  CommandTransformCache BuildInvalidCommandTransformCache() const;
+
+  /**
+   * @brief  构造命令帧等于底盘帧时的 identity TF 缓存快照
+   *         Builds identity TF cache snapshot when command frame equals base frame
+   */
+  CommandTransformCache BuildIdentityCommandTransformCache(
+      const RuntimeParams& runtime_params, const ros::Time& stamp) const;
+
+  /**
+   * @brief  查询最新命令帧到机体帧的 TF
+   *         Looks up latest command-frame to base-frame transform
+   */
+  bool TryLookupCommandTransform(const RuntimeParams& runtime_params,
+                                 geometry_msgs::TransformStamped* command_to_base_transform) const;
+
+  /**
+   * @brief  将 TF 结果转换为实时消费的缓存快照
+   *         Converts TF result into realtime-consumable cache snapshot
+   */
+  bool TryBuildCommandTransformCacheFromTransform(
+      const RuntimeParams& runtime_params,
+      const geometry_msgs::TransformStamped& command_to_base_transform,
+      CommandTransformCache* cache) const;
+
+  /**
+   * @brief  构造本轮应发布的全局指令 TF 缓存快照
+   *         Builds command-transform cache snapshot for current non-RT refresh
+   */
+  bool TryBuildRefreshedCommandTransformCache(const RuntimeParams& runtime_params,
+                                              CommandTransformCache* cache) const;
+
+  /**
    * @brief  非实时线程刷新全局指令 TF 缓存
    *         Refreshes global-command TF cache in non-RT thread
    */
