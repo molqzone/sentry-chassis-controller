@@ -87,71 +87,71 @@ bool SentryChassisController::LoadControllerConfig(
     ros::NodeHandle& nh, std::array<std::string, WHEEL_COUNT>* steer_joint_names,
     std::array<std::string, WHEEL_COUNT>* wheel_joint_names)
 {
-  if (!LoadRequiredFixedArrayParam(nh, "steer_joints", steer_joint_names))
+  if (!LoadRequiredFixedArrayParam(nh, "steer_joints", steer_joint_names) ||
+      !LoadRequiredFixedArrayParam(nh, "wheel_joints", wheel_joint_names))
   {
     return false;
   }
-  if (!LoadRequiredFixedArrayParam(nh, "wheel_joints", wheel_joint_names))
+  if (!LoadOptionalFixedArrayParam(
+          nh, "steer_zero_offsets", std::array<double, WHEEL_COUNT>{},
+          &steer_zero_offsets_) ||
+      !LoadOptionalFixedArrayParam(
+          nh, "command_compensation_matrix", command_compensation_matrix_,
+          &command_compensation_matrix_))
   {
     return false;
   }
 
-  std::vector<double> steer_zero_offsets_values;
-  if (!LoadOptionalVectorParam(nh, "steer_zero_offsets",
-                               std::vector<double>(WHEEL_COUNT, 0.0),
-                               &steer_zero_offsets_values))
+  ResetRuntimeParamShadow();
+  ddynamic_reconfigure::DDynamicReconfigure parameter_loader(nh);
+  RegisterInitParameters(&parameter_loader);
+  RegisterSharedRuntimeParameters(&parameter_loader);
+  if (!ValidateAndApplyControllerParams(true))
   {
     return false;
   }
-  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
-  {
-    steer_zero_offsets_[i] = steer_zero_offsets_values[i];
-  }
+  return LoadAndApplyKinematicsConfig(nh);
+}
 
-  std::vector<double> command_compensation_values;
-  if (!LoadOptionalVectorParam(
-          nh, "command_compensation_matrix",
-          std::vector<double>(command_compensation_matrix_.begin(),
-                              command_compensation_matrix_.end()),
-          &command_compensation_values))
-  {
-    return false;
-  }
-  std::copy_n(command_compensation_values.begin(), command_compensation_matrix_.size(),
-              command_compensation_matrix_.begin());
-
+void SentryChassisController::ResetRuntimeParamShadow()
+{
   runtime_params_shadow_ = RuntimeParams{};
   command_velocity_mode_text_ =
       runtime_params_shadow_.command_velocity_mode == CommandVelocityMode::BASE_LINK
           ? "base_link"
           : "global";
+}
 
-  ddynamic_reconfigure::DDynamicReconfigure parameter_loader(nh);
-  parameter_loader.registerVariable<std::string>(
+void SentryChassisController::RegisterInitParameters(
+    ddynamic_reconfigure::DDynamicReconfigure* parameter_loader)
+{
+  if (parameter_loader == nullptr)
+  {
+    return;
+  }
+
+  parameter_loader->registerVariable<std::string>(
       "cmd_vel_topic", &cmd_vel_topic_, boost::function<void(std::string)>(),
       "cmd_vel topic name.", std::string(), std::string());
-  parameter_loader.registerVariable<bool>("enable_dynamic_reconfigure",
+  parameter_loader->registerVariable<bool>("enable_dynamic_reconfigure",
                                           &enable_dynamic_reconfigure_,
                                           boost::function<void(bool)>(),
                                           "Enable dynamic reconfigure.", false, true);
-  parameter_loader.registerVariable<std::string>("odom_topic", &odom_topic_,
+  parameter_loader->registerVariable<std::string>("odom_topic", &odom_topic_,
                                                  boost::function<void(std::string)>(),
                                                  "Odometry topic name.",
                                                  std::string(), std::string());
-  RegisterSharedRuntimeParameters(&parameter_loader);
+}
 
-  if (!ValidateAndApplyControllerParams(true))
-  {
-    return false;
-  }
-
+bool SentryChassisController::LoadAndApplyKinematicsConfig(ros::NodeHandle& nh)
+{
   Kinematics::DirectionSigns direction_signs;
   if (!LoadDirectionSigns(nh, &direction_signs))
   {
     return false;
   }
   direction_signs_ = direction_signs;
-  kinematics_.SetDirectionSigns(direction_signs);
+  kinematics_.SetDirectionSigns(direction_signs_);
   if (!LoadRollingSigns(nh, &wheel_rolling_signs_))
   {
     return false;

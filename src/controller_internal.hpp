@@ -113,4 +113,25 @@ bool LoadOptionalVectorParam(ros::NodeHandle& nh, const std::string& param_name,
   return true;
 }
 
+template <typename T, std::size_t N>
+bool LoadOptionalFixedArrayParam(ros::NodeHandle& nh, const std::string& param_name,
+                                 const std::array<T, N>& default_values,
+                                 std::array<T, N>* output)
+{
+  if (output == nullptr)
+  {
+    return false;
+  }
+
+  std::vector<T> raw_values;
+  if (!LoadOptionalVectorParam(
+          nh, param_name,
+          std::vector<T>(default_values.begin(), default_values.end()), &raw_values))
+  {
+    return false;
+  }
+  std::copy_n(raw_values.begin(), N, output->begin());
+  return true;
+}
+
 }  // namespace sentry_chassis_controller

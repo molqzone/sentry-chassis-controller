@@ -274,6 +274,24 @@ class SentryChassisController
       std::array<std::string, WHEEL_COUNT>* wheel_joint_names);
 
   /**
+   * @brief  将运行时参数影子恢复为默认值
+   *         Resets runtime-parameter shadow state to defaults
+   */
+  void ResetRuntimeParamShadow();
+
+  /**
+   * @brief  注册仅初始化阶段使用的控制器参数
+   *         Registers controller parameters used only during init
+   */
+  void RegisterInitParameters(ddynamic_reconfigure::DDynamicReconfigure* parameter_loader);
+
+  /**
+   * @brief  加载并生效运动学相关静态配置
+   *         Loads and applies kinematics-related static configuration
+   */
+  bool LoadAndApplyKinematicsConfig(ros::NodeHandle& nh);
+
+  /**
    * @brief  注册动态参数（供初始化阶段和运行时复用）
    *         Registers shared dynamic parameters (reused by init and runtime)
    */
