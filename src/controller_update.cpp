@@ -167,6 +167,314 @@ std::array<double, SentryChassisController::WHEEL_COUNT> BuildWheelDispatchComma
   }
   return wheel_commands;
 }
+
+struct RuntimeParamSnapshot
+{
+  std::string odom_frame_id;
+  std::string base_frame_id;
+  int command_velocity_mode = 0;
+  std::string command_frame_id;
+  bool publish_tf = true;
+  uint64_t odom_frame_config_version = 0;
+  uint64_t odom_publish_config_version = 0;
+  uint64_t command_transform_config_version = 0;
+};
+
+struct RuntimeParamVersionChanges
+{
+  bool odom_frame_config_changed = false;
+  bool odom_publish_config_changed = false;
+  bool command_transform_config_changed = false;
+};
+
+template <typename RuntimeParams>
+RuntimeParamSnapshot CaptureRuntimeParamSnapshot(const RuntimeParams* previous_runtime_params,
+                                                 const RuntimeParams& fallback)
+{
+  const RuntimeParams& source =
+      previous_runtime_params != nullptr ? *previous_runtime_params : fallback;
+  RuntimeParamSnapshot snapshot;
+  snapshot.odom_frame_id = source.odom_frame_id;
+  snapshot.base_frame_id = source.base_frame_id;
+  snapshot.command_velocity_mode = static_cast<int>(source.command_velocity_mode);
+  snapshot.command_frame_id = source.command_frame_id;
+  snapshot.publish_tf = source.publish_tf;
+  snapshot.odom_frame_config_version = source.odom_frame_config_version;
+  snapshot.odom_publish_config_version = source.odom_publish_config_version;
+  snapshot.command_transform_config_version = source.command_transform_config_version;
+  return snapshot;
+}
+
+template <typename RuntimeParams>
+void ClampWheelRadius(RuntimeParams* params)
+{
+  if (params->geometry.wheel_radius >= MIN_WHEEL_RADIUS)
+  {
+    return;
+  }
+  ROS_WARN("Parameter 'geometry/wheel_radius' must be >= %.9f. Clamping to %.9f.",
+           MIN_WHEEL_RADIUS, MIN_WHEEL_RADIUS);
+  params->geometry.wheel_radius = MIN_WHEEL_RADIUS;
+}
+
+template <typename RuntimeParams>
+void ApplyNonNegativeZeroRules(RuntimeParams* params)
+{
+  struct Rule
+  {
+    const char* name;
+    double* value;
+  };
+  const std::array<Rule, 2> rules = {{
+      {"cmd_vel_timeout", &params->cmd_vel_timeout},
+      {"odom_startup_hold_sec", &params->odom_startup_hold_sec},
+  }};
+  for (const auto& rule : rules)
+  {
+    if (*rule.value < 0.0)
+    {
+      ROS_WARN("Parameter '%s' is negative. Clamping to 0.0.", rule.name);
+      *rule.value = 0.0;
+    }
+  }
+}
+
+template <typename RuntimeParams>
+void ApplyPositiveFallbackRules(RuntimeParams* params)
+{
+  struct Rule
+  {
+    const char* name;
+    double* value;
+    double fallback;
+  };
+  const std::array<Rule, 6> rules = {{
+      {"odom_max_linear_speed", &params->odom_max_linear_speed,
+       DEFAULT_ODOM_MAX_LINEAR_SPEED},
+      {"odom_max_angular_speed", &params->odom_max_angular_speed,
+       DEFAULT_ODOM_MAX_ANGULAR_SPEED},
+      {"wheel_effort_limit", &params->wheel_effort_limit, DEFAULT_WHEEL_EFFORT_LIMIT},
+      {"max_linear_acceleration", &params->max_linear_acceleration,
+       DEFAULT_MAX_LINEAR_ACCELERATION},
+      {"max_angular_acceleration", &params->max_angular_acceleration,
+       DEFAULT_MAX_ANGULAR_ACCELERATION},
+      {"max_power", &params->max_power, DEFAULT_MAX_POWER},
+  }};
+  for (const auto& rule : rules)
+  {
+    if (*rule.value <= 0.0)
+    {
+      ROS_WARN("Parameter '%s' must be positive. Clamping to %.3f.", rule.name,
+               rule.fallback);
+      *rule.value = rule.fallback;
+    }
+  }
+}
+
+template <typename RuntimeParams>
+void ApplyNonNegativeFallbackRules(RuntimeParams* params)
+{
+  struct Rule
+  {
+    const char* name;
+    double* value;
+    double fallback;
+  };
+  const std::array<Rule, 2> rules = {{
+      {"power_loss_k1", &params->power_loss_k1, DEFAULT_POWER_LOSS_K1},
+      {"power_loss_k2", &params->power_loss_k2, DEFAULT_POWER_LOSS_K2},
+  }};
+  for (const auto& rule : rules)
+  {
+    if (*rule.value < 0.0)
+    {
+      ROS_WARN("Parameter '%s' must be non-negative. Clamping to %.6f.", rule.name,
+               rule.fallback);
+      *rule.value = rule.fallback;
+    }
+  }
+}
+
+template <typename RuntimeParams>
+void ApplyRangeClampRules(RuntimeParams* params)
+{
+  struct Rule
+  {
+    const char* name;
+    double* value;
+    double min;
+    double max;
+  };
+  const std::array<Rule, 5> rules = {{
+      {"reverse_ccw_vx_scale", &params->reverse_ccw_vx_scale,
+       MIN_REVERSE_CCW_VX_SCALE, MAX_REVERSE_CCW_VX_SCALE},
+      {"reverse_ccw_wz_gain", &params->reverse_ccw_wz_gain,
+       MIN_REVERSE_CCW_WZ_GAIN, MAX_REVERSE_CCW_WZ_GAIN},
+      {"reverse_ccw_vy_threshold", &params->reverse_ccw_vy_threshold,
+       MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD},
+      {"reverse_ccw_steer_priority_error", &params->reverse_ccw_steer_priority_error,
+       MIN_REVERSE_CCW_STEER_PRIORITY_ERROR, MAX_REVERSE_CCW_STEER_PRIORITY_ERROR},
+      {"min_power_scale", &params->min_power_scale, MIN_POWER_SCALE, MAX_POWER_SCALE},
+  }};
+  for (const auto& rule : rules)
+  {
+    if (*rule.value < rule.min || *rule.value > rule.max)
+    {
+      ROS_WARN("Parameter '%s' must be in [%.3f, %.3f]. Clamping.", rule.name,
+               rule.min, rule.max);
+      *rule.value = std::max(rule.min, std::min(rule.max, *rule.value));
+    }
+  }
+}
+
+template <typename RuntimeParams>
+void SanitizeNumericRuntimeParams(RuntimeParams* params)
+{
+  ClampWheelRadius(params);
+  ApplyNonNegativeZeroRules(params);
+  ApplyPositiveFallbackRules(params);
+  ApplyNonNegativeFallbackRules(params);
+  ApplyRangeClampRules(params);
+}
+
+template <typename RuntimeParams, typename ParseModeFn, typename ModeToTextFn>
+bool NormalizeCommandVelocityMode(RuntimeParams* params,
+                                  std::string* command_velocity_mode_text,
+                                  bool strict_validation,
+                                  ParseModeFn parse_command_velocity_mode,
+                                  ModeToTextFn command_velocity_mode_to_text)
+{
+  auto parsed_mode = params->command_velocity_mode;
+  if (parse_command_velocity_mode(*command_velocity_mode_text, &parsed_mode))
+  {
+    params->command_velocity_mode = parsed_mode;
+    return true;
+  }
+  if (strict_validation)
+  {
+    ROS_ERROR(
+        "Parameter 'command_velocity_mode' must be 'base_link' or 'global', got '%s'.",
+        command_velocity_mode_text->c_str());
+    return false;
+  }
+  ROS_WARN_THROTTLE(1.0,
+                    "Dynamic command_velocity_mode '%s' is invalid. Keeping previous mode.",
+                    command_velocity_mode_text->c_str());
+  *command_velocity_mode_text =
+      command_velocity_mode_to_text(params->command_velocity_mode);
+  return true;
+}
+
+template <typename RuntimeParams>
+void SanitizeRuntimeFrames(RuntimeParams* params,
+                           const std::string& command_velocity_mode_text)
+{
+  if (params->base_frame_id.empty())
+  {
+    ROS_WARN("Parameter 'base_frame_id' is empty. Falling back to 'base_link'.");
+    params->base_frame_id = "base_link";
+  }
+  if (params->odom_frame_id.empty())
+  {
+    ROS_WARN("Parameter 'odom_frame_id' is empty. Falling back to 'odom'.");
+    params->odom_frame_id = "odom";
+  }
+  if (params->command_frame_id.empty())
+  {
+    const std::string fallback_command_frame =
+        command_velocity_mode_text == "base_link" ? params->base_frame_id
+                                                   : params->odom_frame_id;
+    ROS_WARN("Parameter 'command_frame_id' is empty. Falling back to '%s'.",
+             fallback_command_frame.c_str());
+    params->command_frame_id = fallback_command_frame;
+  }
+
+  if (command_velocity_mode_text == "base_link" &&
+      params->command_frame_id != params->base_frame_id)
+  {
+    ROS_WARN(
+        "Parameter 'command_frame_id' is '%s' while command_velocity_mode is "
+        "'base_link'. Falling back to '%s'.",
+        params->command_frame_id.c_str(), params->base_frame_id.c_str());
+    params->command_frame_id = params->base_frame_id;
+  }
+  if (command_velocity_mode_text == "global" &&
+      params->command_frame_id == params->base_frame_id)
+  {
+    ROS_WARN_THROTTLE(
+        1.0,
+        "command_velocity_mode is 'global' but command_frame_id equals base frame '%s'. "
+        "Global transform will have no effect.",
+        params->base_frame_id.c_str());
+  }
+}
+
+template <typename RuntimeParams, typename ParseModeFn, typename ModeToTextFn>
+bool NormalizeRuntimeFrameParams(RuntimeParams* params,
+                                 std::string* command_velocity_mode_text,
+                                 bool strict_validation,
+                                 ParseModeFn parse_command_velocity_mode,
+                                 ModeToTextFn command_velocity_mode_to_text)
+{
+  if (!NormalizeCommandVelocityMode(params, command_velocity_mode_text, strict_validation,
+                                    parse_command_velocity_mode,
+                                    command_velocity_mode_to_text))
+  {
+    return false;
+  }
+  SanitizeRuntimeFrames(params, *command_velocity_mode_text);
+  return true;
+}
+
+template <typename RuntimeParams>
+void WarnOnOdomFrameChange(const RuntimeParamSnapshot& previous_runtime_params,
+                           const RuntimeParams& params, bool strict_validation)
+{
+  if (strict_validation ||
+      (previous_runtime_params.odom_frame_id == params.odom_frame_id &&
+       previous_runtime_params.base_frame_id == params.base_frame_id))
+  {
+    return;
+  }
+  ROS_WARN(
+      "Odometry frame parameters changed (odom: '%s' -> '%s', base: '%s' -> '%s'). "
+      "Resetting accumulated odometry state.",
+      previous_runtime_params.odom_frame_id.c_str(), params.odom_frame_id.c_str(),
+      previous_runtime_params.base_frame_id.c_str(), params.base_frame_id.c_str());
+}
+
+template <typename RuntimeParams>
+RuntimeParamVersionChanges ApplyRuntimeParamVersioning(
+    const RuntimeParamSnapshot& previous_runtime_params, RuntimeParams* params)
+{
+  RuntimeParamVersionChanges changes;
+  changes.odom_frame_config_changed =
+      previous_runtime_params.odom_frame_id != params->odom_frame_id ||
+      previous_runtime_params.base_frame_id != params->base_frame_id;
+  params->odom_frame_config_version =
+      changes.odom_frame_config_changed
+          ? previous_runtime_params.odom_frame_config_version + 1U
+          : previous_runtime_params.odom_frame_config_version;
+
+  changes.odom_publish_config_changed =
+      changes.odom_frame_config_changed ||
+      previous_runtime_params.publish_tf != params->publish_tf;
+  params->odom_publish_config_version =
+      changes.odom_publish_config_changed
+          ? previous_runtime_params.odom_publish_config_version + 1U
+          : previous_runtime_params.odom_publish_config_version;
+
+  changes.command_transform_config_changed =
+      previous_runtime_params.command_velocity_mode !=
+          static_cast<int>(params->command_velocity_mode) ||
+      previous_runtime_params.command_frame_id != params->command_frame_id ||
+      previous_runtime_params.base_frame_id != params->base_frame_id;
+  params->command_transform_config_version =
+      changes.command_transform_config_changed
+          ? previous_runtime_params.command_transform_config_version + 1U
+          : previous_runtime_params.command_transform_config_version;
+  return changes;
+}
 }  // namespace
 
 bool SentryChassisController::ParseCommandVelocityMode(
@@ -194,228 +502,30 @@ bool SentryChassisController::ParseCommandVelocityMode(
 bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_validation)
 {
   RuntimeParams& params = runtime_params_shadow_;
-  const RuntimeParams* previous_runtime_params = runtime_params_buffer_.readFromNonRT();
-  const std::string PREVIOUS_ODOM_FRAME_ID =
-      previous_runtime_params != nullptr ? previous_runtime_params->odom_frame_id
-                                         : params.odom_frame_id;
-  const std::string PREVIOUS_BASE_FRAME_ID =
-      previous_runtime_params != nullptr ? previous_runtime_params->base_frame_id
-                                         : params.base_frame_id;
-  const CommandVelocityMode PREVIOUS_COMMAND_VELOCITY_MODE =
-      previous_runtime_params != nullptr ? previous_runtime_params->command_velocity_mode
-                                         : params.command_velocity_mode;
-  const std::string PREVIOUS_COMMAND_FRAME_ID =
-      previous_runtime_params != nullptr ? previous_runtime_params->command_frame_id
-                                         : params.command_frame_id;
-  const bool PREVIOUS_PUBLISH_TF =
-      previous_runtime_params != nullptr ? previous_runtime_params->publish_tf : params.publish_tf;
-  const uint64_t PREVIOUS_ODOM_FRAME_CONFIG_VERSION =
-      previous_runtime_params != nullptr ? previous_runtime_params->odom_frame_config_version
-                                         : params.odom_frame_config_version;
-  const uint64_t PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION =
-      previous_runtime_params != nullptr ? previous_runtime_params->odom_publish_config_version
-                                         : params.odom_publish_config_version;
-  const uint64_t PREVIOUS_COMMAND_TRANSFORM_CONFIG_VERSION =
-      previous_runtime_params != nullptr
-          ? previous_runtime_params->command_transform_config_version
-          : params.command_transform_config_version;
+  const RuntimeParamSnapshot previous_runtime_params =
+      CaptureRuntimeParamSnapshot(runtime_params_buffer_.readFromNonRT(), params);
 
-  struct PositiveFallbackRule
-  {
-    const char* name;
-    double* value;
-    double fallback;
-  };
-  struct NonNegativeFallbackRule
-  {
-    const char* name;
-    double* value;
-    double fallback;
-  };
-  struct NonNegativeZeroRule
-  {
-    const char* name;
-    double* value;
-  };
-  struct RangeClampRule
-  {
-    const char* name;
-    double* value;
-    double min;
-    double max;
+  const auto parse_command_velocity_mode =
+      [](const std::string& mode_text, auto* parsed_mode) {
+        return SentryChassisController::ParseCommandVelocityMode(mode_text, parsed_mode);
+      };
+  const auto command_velocity_mode_to_text = [](const CommandVelocityMode mode) {
+    return mode == CommandVelocityMode::BASE_LINK ? "base_link" : "global";
   };
 
-  if (params.geometry.wheel_radius < MIN_WHEEL_RADIUS)
+  SanitizeNumericRuntimeParams(&params);
+  if (!NormalizeRuntimeFrameParams(&params, &command_velocity_mode_text_,
+                                   strict_validation, parse_command_velocity_mode,
+                                   command_velocity_mode_to_text))
   {
-    ROS_WARN("Parameter 'geometry/wheel_radius' must be >= %.9f. Clamping to %.9f.",
-             MIN_WHEEL_RADIUS, MIN_WHEEL_RADIUS);
-    params.geometry.wheel_radius = MIN_WHEEL_RADIUS;
+    return false;
   }
+  WarnOnOdomFrameChange(previous_runtime_params, params, strict_validation);
 
-  const std::array<NonNegativeZeroRule, 2> NON_NEGATIVE_ZERO_RULES = {{
-      {"cmd_vel_timeout", &params.cmd_vel_timeout},
-      {"odom_startup_hold_sec", &params.odom_startup_hold_sec},
-  }};
-  for (const auto& rule : NON_NEGATIVE_ZERO_RULES)
-  {
-    if (*rule.value < 0.0)
-    {
-      ROS_WARN("Parameter '%s' is negative. Clamping to 0.0.", rule.name);
-      *rule.value = 0.0;
-    }
-  }
-
-  const std::array<PositiveFallbackRule, 6> POSITIVE_FALLBACK_RULES = {{
-      {"odom_max_linear_speed", &params.odom_max_linear_speed,
-       DEFAULT_ODOM_MAX_LINEAR_SPEED},
-      {"odom_max_angular_speed", &params.odom_max_angular_speed,
-       DEFAULT_ODOM_MAX_ANGULAR_SPEED},
-      {"wheel_effort_limit", &params.wheel_effort_limit, DEFAULT_WHEEL_EFFORT_LIMIT},
-      {"max_linear_acceleration", &params.max_linear_acceleration,
-       DEFAULT_MAX_LINEAR_ACCELERATION},
-      {"max_angular_acceleration", &params.max_angular_acceleration,
-       DEFAULT_MAX_ANGULAR_ACCELERATION},
-      {"max_power", &params.max_power, DEFAULT_MAX_POWER},
-  }};
-  for (const auto& rule : POSITIVE_FALLBACK_RULES)
-  {
-    if (*rule.value <= 0.0)
-    {
-      ROS_WARN("Parameter '%s' must be positive. Clamping to %.3f.",
-               rule.name, rule.fallback);
-      *rule.value = rule.fallback;
-    }
-  }
-
-  const std::array<NonNegativeFallbackRule, 2> NON_NEGATIVE_FALLBACK_RULES = {{
-      {"power_loss_k1", &params.power_loss_k1, DEFAULT_POWER_LOSS_K1},
-      {"power_loss_k2", &params.power_loss_k2, DEFAULT_POWER_LOSS_K2},
-  }};
-  for (const auto& rule : NON_NEGATIVE_FALLBACK_RULES)
-  {
-    if (*rule.value < 0.0)
-    {
-      ROS_WARN("Parameter '%s' must be non-negative. Clamping to %.6f.",
-               rule.name, rule.fallback);
-      *rule.value = rule.fallback;
-    }
-  }
-
-  const std::array<RangeClampRule, 5> RANGE_CLAMP_RULES = {{
-      {"reverse_ccw_vx_scale", &params.reverse_ccw_vx_scale, MIN_REVERSE_CCW_VX_SCALE,
-       MAX_REVERSE_CCW_VX_SCALE},
-      {"reverse_ccw_wz_gain", &params.reverse_ccw_wz_gain, MIN_REVERSE_CCW_WZ_GAIN,
-       MAX_REVERSE_CCW_WZ_GAIN},
-      {"reverse_ccw_vy_threshold", &params.reverse_ccw_vy_threshold,
-       MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD},
-      {"reverse_ccw_steer_priority_error", &params.reverse_ccw_steer_priority_error,
-       MIN_REVERSE_CCW_STEER_PRIORITY_ERROR, MAX_REVERSE_CCW_STEER_PRIORITY_ERROR},
-      {"min_power_scale", &params.min_power_scale, MIN_POWER_SCALE, MAX_POWER_SCALE},
-  }};
-  for (const auto& rule : RANGE_CLAMP_RULES)
-  {
-    if (*rule.value < rule.min || *rule.value > rule.max)
-    {
-      ROS_WARN("Parameter '%s' must be in [%.3f, %.3f]. Clamping.",
-               rule.name, rule.min, rule.max);
-      *rule.value = std::max(rule.min, std::min(rule.max, *rule.value));
-    }
-  }
-
-  CommandVelocityMode parsed_mode = params.command_velocity_mode;
-  if (!ParseCommandVelocityMode(command_velocity_mode_text_, &parsed_mode))
-  {
-    if (strict_validation)
-    {
-      ROS_ERROR(
-          "Parameter 'command_velocity_mode' must be 'base_link' or 'global', got '%s'.",
-          command_velocity_mode_text_.c_str());
-      return false;
-    }
-    ROS_WARN_THROTTLE(
-        1.0,
-        "Dynamic command_velocity_mode '%s' is invalid. Keeping previous mode.",
-        command_velocity_mode_text_.c_str());
-    command_velocity_mode_text_ =
-        params.command_velocity_mode == CommandVelocityMode::BASE_LINK ? "base_link"
-                                                                       : "global";
-    parsed_mode = params.command_velocity_mode;
-  }
-  params.command_velocity_mode = parsed_mode;
-
-  if (params.base_frame_id.empty())
-  {
-    ROS_WARN("Parameter 'base_frame_id' is empty. Falling back to 'base_link'.");
-    params.base_frame_id = "base_link";
-  }
-  if (params.odom_frame_id.empty())
-  {
-    ROS_WARN("Parameter 'odom_frame_id' is empty. Falling back to 'odom'.");
-    params.odom_frame_id = "odom";
-  }
-  if (params.command_frame_id.empty())
-  {
-    const std::string FALLBACK_COMMAND_FRAME =
-        params.command_velocity_mode == CommandVelocityMode::BASE_LINK
-            ? params.base_frame_id
-            : params.odom_frame_id;
-    ROS_WARN("Parameter 'command_frame_id' is empty. Falling back to '%s'.",
-             FALLBACK_COMMAND_FRAME.c_str());
-    params.command_frame_id = FALLBACK_COMMAND_FRAME;
-  }
-
-  if (params.command_velocity_mode == CommandVelocityMode::BASE_LINK &&
-      params.command_frame_id != params.base_frame_id)
-  {
-    ROS_WARN(
-        "Parameter 'command_frame_id' is '%s' while command_velocity_mode is "
-        "'base_link'. Falling back to '%s'.",
-        params.command_frame_id.c_str(), params.base_frame_id.c_str());
-    params.command_frame_id = params.base_frame_id;
-  }
-  if (params.command_velocity_mode == CommandVelocityMode::GLOBAL &&
-      params.command_frame_id == params.base_frame_id)
-  {
-    ROS_WARN_THROTTLE(
-        1.0,
-        "command_velocity_mode is 'global' but command_frame_id equals base frame '%s'. "
-        "Global transform will have no effect.",
-        params.base_frame_id.c_str());
-  }
-  if (!strict_validation &&
-      (PREVIOUS_ODOM_FRAME_ID != params.odom_frame_id ||
-       PREVIOUS_BASE_FRAME_ID != params.base_frame_id))
-  {
-    ROS_WARN(
-        "Odometry frame parameters changed (odom: '%s' -> '%s', base: '%s' -> '%s'). "
-        "Resetting accumulated odometry state.",
-        PREVIOUS_ODOM_FRAME_ID.c_str(), params.odom_frame_id.c_str(),
-        PREVIOUS_BASE_FRAME_ID.c_str(), params.base_frame_id.c_str());
-  }
-
-  const bool ODOM_FRAME_CONFIG_CHANGED =
-      PREVIOUS_ODOM_FRAME_ID != params.odom_frame_id ||
-      PREVIOUS_BASE_FRAME_ID != params.base_frame_id;
-  params.odom_frame_config_version = ODOM_FRAME_CONFIG_CHANGED
-                                         ? PREVIOUS_ODOM_FRAME_CONFIG_VERSION + 1U
-                                         : PREVIOUS_ODOM_FRAME_CONFIG_VERSION;
-
-  const bool ODOM_PUBLISH_CONFIG_CHANGED =
-      ODOM_FRAME_CONFIG_CHANGED || PREVIOUS_PUBLISH_TF != params.publish_tf;
-  params.odom_publish_config_version = ODOM_PUBLISH_CONFIG_CHANGED
-                                           ? PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION + 1U
-                                           : PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION;
-
-  const bool COMMAND_TRANSFORM_CONFIG_CHANGED =
-      PREVIOUS_COMMAND_VELOCITY_MODE != params.command_velocity_mode ||
-      PREVIOUS_COMMAND_FRAME_ID != params.command_frame_id ||
-      PREVIOUS_BASE_FRAME_ID != params.base_frame_id;
-  params.command_transform_config_version = COMMAND_TRANSFORM_CONFIG_CHANGED
-                                                ? PREVIOUS_COMMAND_TRANSFORM_CONFIG_VERSION + 1U
-                                                : PREVIOUS_COMMAND_TRANSFORM_CONFIG_VERSION;
-
+  const RuntimeParamVersionChanges version_changes =
+      ApplyRuntimeParamVersioning(previous_runtime_params, &params);
   runtime_params_buffer_.writeFromNonRT(params);
-  if (COMMAND_TRANSFORM_CONFIG_CHANGED)
+  if (version_changes.command_transform_config_changed)
   {
     InvalidateCommandTransformCache();
     RefreshCommandTransformCache(ros::TimerEvent());
