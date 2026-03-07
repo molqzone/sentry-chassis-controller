@@ -314,6 +314,12 @@ class SentryChassisController
   bool InitControllerPids(ros::NodeHandle& nh);
 
   /**
+   * @brief  激活控制器运行时资源
+   *         Activates controller runtime state, ROS interfaces and timers
+   */
+  void InitRuntimeInfrastructure(ros::NodeHandle& nh);
+
+  /**
    * @brief  初始化实时状态与缓存
    *         Initializes realtime state and buffers
    */
@@ -344,10 +350,22 @@ class SentryChassisController
   void InitOdomPublishTimer(ros::NodeHandle& nh);
 
   /**
-   * @brief  初始化运行时动态调参服务
-   *         Initializes runtime dynamic reconfigure service
+   * @brief  预构建运行时动态调参对象，但暂不发布服务
+   *         Prepares runtime dynamic reconfigure object without publishing services yet
    */
-  bool InitRuntimeDynamicReconfigure(ros::NodeHandle& nh);
+  bool PrepareRuntimeDynamicReconfigure(ros::NodeHandle& nh);
+
+  /**
+   * @brief  发布运行时动态调参服务与话题
+   *         Publishes runtime dynamic reconfigure services and topics
+   */
+  void PublishRuntimeDynamicReconfigure();
+
+  /**
+   * @brief  输出初始化后的配置摘要
+   *         Logs controller configuration summary after init completes
+   */
+  void LogControllerConfiguration() const;
 
   /**
    * @brief  读取并校验轮向符号矩阵参数

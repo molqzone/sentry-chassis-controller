@@ -94,6 +94,10 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   {
     return false;
   }
+  if (!PrepareRuntimeDynamicReconfigure(nh))
+  {
+    return false;
+  }
   if (!InitJointHandles(hw, steer_joint_names, wheel_joint_names))
   {
     return false;
@@ -102,63 +106,11 @@ bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
   {
     return false;
   }
-  InitRealtimeState();
-  InitRosInterfaces(nh);
-  InitTfResources();
-  InitCommandTransformCacheTimer(nh);
-  InitOdomPublishTimer(nh);
-  if (!InitRuntimeDynamicReconfigure(nh))
-  {
-    return false;
-  }
 
-  ROS_INFO(
-      "SentryChassisController initialized with cmd_vel_topic='%s', "
-      "command_velocity_mode='%s', command_frame_id='%s', "
-      "timeout=%.3fs.",
-      cmd_vel_topic_.c_str(),
-      runtime_params_shadow_.command_velocity_mode == CommandVelocityMode::BASE_LINK
-          ? "base_link"
-          : "global",
-      runtime_params_shadow_.command_frame_id.c_str(),
-      runtime_params_shadow_.cmd_vel_timeout);
-  ROS_INFO(
-      "odometry output configured with topic='%s', odom_frame='%s', base_frame='%s', "
-      "publish_tf=%s.",
-      odom_topic_.c_str(), runtime_params_shadow_.odom_frame_id.c_str(),
-      runtime_params_shadow_.base_frame_id.c_str(),
-      runtime_params_shadow_.publish_tf ? "true" : "false");
-  ROS_INFO(
-      "odometry stabilization configured with startup_hold=%.3fs, max_linear=%.3fm/s, "
-      "max_angular=%.3frad/s, integrate_on_timeout=%s.",
-      runtime_params_shadow_.odom_startup_hold_sec,
-      runtime_params_shadow_.odom_max_linear_speed,
-      runtime_params_shadow_.odom_max_angular_speed,
-      runtime_params_shadow_.odom_integrate_on_timeout ? "true" : "false");
-  ROS_INFO(
-      "acceleration limits configured with enabled=%s, max_linear=%.3fm/s^2, "
-      "max_angular=%.3frad/s^2.",
-      runtime_params_shadow_.enable_acceleration_limits ? "true" : "false",
-      runtime_params_shadow_.max_linear_acceleration,
-      runtime_params_shadow_.max_angular_acceleration);
-  ROS_INFO(
-      "power limiting configured with enabled=%s, logging=%s, max_power=%.3fW, "
-      "k1=%.6f, k2=%.6f, min_scale=%.3f.",
-      runtime_params_shadow_.enable_power_limit ? "true" : "false",
-      runtime_params_shadow_.enable_power_limit_logging ? "true" : "false",
-      runtime_params_shadow_.max_power, runtime_params_shadow_.power_loss_k1,
-      runtime_params_shadow_.power_loss_k2, runtime_params_shadow_.min_power_scale);
-  ROS_INFO("wheel effort command limit configured as %.3f.",
-           runtime_params_shadow_.wheel_effort_limit);
-  ROS_INFO(
-      "wheel_direction_signs loaded: vx=[%d,%d,%d,%d], vy=[%d,%d,%d,%d], "
-      "wz=[%d,%d,%d,%d].",
-      direction_signs_.vx[0], direction_signs_.vx[1], direction_signs_.vx[2],
-      direction_signs_.vx[3], direction_signs_.vy[0], direction_signs_.vy[1],
-      direction_signs_.vy[2], direction_signs_.vy[3], direction_signs_.wz[0],
-      direction_signs_.wz[1], direction_signs_.wz[2], direction_signs_.wz[3]);
-  ROS_INFO("wheel_rolling_signs loaded: [%d,%d,%d,%d].", wheel_rolling_signs_[0],
-           wheel_rolling_signs_[1], wheel_rolling_signs_[2], wheel_rolling_signs_[3]);
+  InitRuntimeInfrastructure(nh);
+  // Publish dynamic reconfigure only after all fallible init steps succeed.
+  PublishRuntimeDynamicReconfigure();
+  LogControllerConfiguration();
   return true;
 }
 
@@ -356,6 +308,15 @@ bool SentryChassisController::InitControllerPids(ros::NodeHandle& nh)
          InitPidGroup(nh, "wheel", &wheel_pids_);
 }
 
+void SentryChassisController::InitRuntimeInfrastructure(ros::NodeHandle& nh)
+{
+  InitRealtimeState();
+  InitRosInterfaces(nh);
+  InitTfResources();
+  InitCommandTransformCacheTimer(nh);
+  InitOdomPublishTimer(nh);
+}
+
 void SentryChassisController::InitRealtimeState()
 {
   CommandData command;
@@ -416,7 +377,7 @@ void SentryChassisController::InitOdomPublishTimer(ros::NodeHandle& nh)
                                        this);
 }
 
-bool SentryChassisController::InitRuntimeDynamicReconfigure(ros::NodeHandle& nh)
+bool SentryChassisController::PrepareRuntimeDynamicReconfigure(ros::NodeHandle& nh)
 {
   if (!enable_dynamic_reconfigure_)
   {
@@ -430,9 +391,68 @@ bool SentryChassisController::InitRuntimeDynamicReconfigure(ros::NodeHandle& nh)
   controller_params_reconfigure_->setPostUpdateCallback([this]() {
     ValidateAndApplyControllerParams(false);
   });
-  controller_params_reconfigure_->publishServicesTopics();
   return ValidateAndApplyControllerParams(true);
 }
+
+void SentryChassisController::PublishRuntimeDynamicReconfigure()
+{
+  if (controller_params_reconfigure_)
+  {
+    controller_params_reconfigure_->publishServicesTopics();
+  }
+}
+
+void SentryChassisController::LogControllerConfiguration() const
+{
+  ROS_INFO(
+      "SentryChassisController initialized with cmd_vel_topic='%s', "
+      "command_velocity_mode='%s', command_frame_id='%s', "
+      "timeout=%.3fs.",
+      cmd_vel_topic_.c_str(),
+      runtime_params_shadow_.command_velocity_mode == CommandVelocityMode::BASE_LINK
+          ? "base_link"
+          : "global",
+      runtime_params_shadow_.command_frame_id.c_str(),
+      runtime_params_shadow_.cmd_vel_timeout);
+  ROS_INFO(
+      "odometry output configured with topic='%s', odom_frame='%s', base_frame='%s', "
+      "publish_tf=%s.",
+      odom_topic_.c_str(), runtime_params_shadow_.odom_frame_id.c_str(),
+      runtime_params_shadow_.base_frame_id.c_str(),
+      runtime_params_shadow_.publish_tf ? "true" : "false");
+  ROS_INFO(
+      "odometry stabilization configured with startup_hold=%.3fs, max_linear=%.3fm/s, "
+      "max_angular=%.3frad/s, integrate_on_timeout=%s.",
+      runtime_params_shadow_.odom_startup_hold_sec,
+      runtime_params_shadow_.odom_max_linear_speed,
+      runtime_params_shadow_.odom_max_angular_speed,
+      runtime_params_shadow_.odom_integrate_on_timeout ? "true" : "false");
+  ROS_INFO(
+      "acceleration limits configured with enabled=%s, max_linear=%.3fm/s^2, "
+      "max_angular=%.3frad/s^2.",
+      runtime_params_shadow_.enable_acceleration_limits ? "true" : "false",
+      runtime_params_shadow_.max_linear_acceleration,
+      runtime_params_shadow_.max_angular_acceleration);
+  ROS_INFO(
+      "power limiting configured with enabled=%s, logging=%s, max_power=%.3fW, "
+      "k1=%.6f, k2=%.6f, min_scale=%.3f.",
+      runtime_params_shadow_.enable_power_limit ? "true" : "false",
+      runtime_params_shadow_.enable_power_limit_logging ? "true" : "false",
+      runtime_params_shadow_.max_power, runtime_params_shadow_.power_loss_k1,
+      runtime_params_shadow_.power_loss_k2, runtime_params_shadow_.min_power_scale);
+  ROS_INFO("wheel effort command limit configured as %.3f.",
+           runtime_params_shadow_.wheel_effort_limit);
+  ROS_INFO(
+      "wheel_direction_signs loaded: vx=[%d,%d,%d,%d], vy=[%d,%d,%d,%d], "
+      "wz=[%d,%d,%d,%d].",
+      direction_signs_.vx[0], direction_signs_.vx[1], direction_signs_.vx[2],
+      direction_signs_.vx[3], direction_signs_.vy[0], direction_signs_.vy[1],
+      direction_signs_.vy[2], direction_signs_.vy[3], direction_signs_.wz[0],
+      direction_signs_.wz[1], direction_signs_.wz[2], direction_signs_.wz[3]);
+  ROS_INFO("wheel_rolling_signs loaded: [%d,%d,%d,%d].", wheel_rolling_signs_[0],
+           wheel_rolling_signs_[1], wheel_rolling_signs_[2], wheel_rolling_signs_[3]);
+}
+
 bool SentryChassisController::InitDynamicPid(ros::NodeHandle& pid_nh,
                                               control_toolbox::Pid* pid)
 {
