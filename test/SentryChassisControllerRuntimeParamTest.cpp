@@ -1404,6 +1404,33 @@ TEST(SentryChassisControllerRuntimeParams,
 }
 
 TEST(SentryChassisControllerRuntimeParams,
+     FlushDeferredRealtimeWarningsConsumesPowerLimitWarningSnapshot)
+{
+  SentryChassisController controller;
+  const std::array<double, 4> wheel_velocities = {{10.0, 10.0, 10.0, 10.0}};
+  const std::array<double, 4> wheel_efforts = {{2.0, 2.0, 2.0, 2.0}};
+  const auto limited_efforts =
+      SentryChassisControllerRuntimeParamsTestAccessor::ApplyPowerLimiting(
+          &controller, wheel_velocities, wheel_efforts, true, true,
+          40.0, 0.0, 0.0, 0.3);
+  (void)limited_efforts;
+  ASSERT_GT(
+      SentryChassisControllerRuntimeParamsTestAccessor::GetPowerLimitWarningCount(
+          &controller),
+      0U);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::SetDeferredWarningNextFlushNs(
+      &controller, 0);
+  SentryChassisControllerRuntimeParamsTestAccessor::FlushDeferredRealtimeWarnings(
+      &controller);
+
+  EXPECT_EQ(
+      0U,
+      SentryChassisControllerRuntimeParamsTestAccessor::GetPowerLimitWarningCount(
+          &controller));
+}
+
+TEST(SentryChassisControllerRuntimeParams,
      ApplyPowerLimitingRecordsDeferredWarningSnapshotWhenLoggingEnabled)
 {
   SentryChassisController controller;

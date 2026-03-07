@@ -187,6 +187,95 @@ struct RuntimeParamVersionChanges
   bool command_transform_config_changed = false;
 };
 
+struct DeferredWarningRule
+{
+  std::atomic<uint32_t>* counter = nullptr;
+  const char* message = nullptr;
+};
+
+struct PowerLimitWarningSnapshot
+{
+  uint32_t count = 0U;
+  double last_predicted_power_w = 0.0;
+  double last_max_power_w = 0.0;
+  double last_scale = 0.0;
+};
+
+bool TryBeginDeferredWarningFlush(std::atomic<int64_t>* next_flush_time_ns,
+                                  int64_t now_ns)
+{
+  if (next_flush_time_ns == nullptr)
+  {
+    return false;
+  }
+
+  int64_t next_flush_time = next_flush_time_ns->load(std::memory_order_relaxed);
+  if (now_ns < next_flush_time)
+  {
+    return false;
+  }
+  const int64_t reserved_next_flush_time =
+      now_ns + DEFERRED_RT_WARN_FLUSH_INTERVAL_NS;
+  return next_flush_time_ns->compare_exchange_strong(
+      next_flush_time, reserved_next_flush_time, std::memory_order_relaxed,
+      std::memory_order_relaxed);
+}
+
+void FlushDeferredWarningCounters(
+    const std::array<DeferredWarningRule, 9>& warning_rules)
+{
+  for (const auto& rule : warning_rules)
+  {
+    const uint32_t count = rule.counter->exchange(0U, std::memory_order_relaxed);
+    if (count > 0U)
+    {
+      ROS_WARN("%s (count=%u).", rule.message, count);
+    }
+  }
+}
+
+PowerLimitWarningSnapshot ConsumePowerLimitWarningSnapshot(
+    std::atomic<uint32_t>* count_counter,
+    std::atomic<int32_t>* last_predicted_milliwatt,
+    std::atomic<int32_t>* last_max_milliwatt,
+    std::atomic<int32_t>* last_scale_milli)
+{
+  PowerLimitWarningSnapshot snapshot;
+  if (count_counter == nullptr || last_predicted_milliwatt == nullptr ||
+      last_max_milliwatt == nullptr || last_scale_milli == nullptr)
+  {
+    return snapshot;
+  }
+
+  snapshot.count = count_counter->exchange(0U, std::memory_order_relaxed);
+  if (snapshot.count == 0U)
+  {
+    return snapshot;
+  }
+
+  snapshot.last_predicted_power_w =
+      static_cast<double>(last_predicted_milliwatt->load(std::memory_order_relaxed)) /
+      1000.0;
+  snapshot.last_max_power_w =
+      static_cast<double>(last_max_milliwatt->load(std::memory_order_relaxed)) / 1000.0;
+  snapshot.last_scale =
+      static_cast<double>(last_scale_milli->load(std::memory_order_relaxed)) / 1000.0;
+  return snapshot;
+}
+
+void FlushPowerLimitWarning(const PowerLimitWarningSnapshot& snapshot)
+{
+  if (snapshot.count == 0U)
+  {
+    return;
+  }
+  ROS_WARN(
+      "Power limit was active in realtime path (count=%u, "
+      "last_predicted=%.3fW, last_max=%.3fW, last_scale=%.3f).",
+      snapshot.count, snapshot.last_predicted_power_w, snapshot.last_max_power_w,
+      snapshot.last_scale);
+}
+
 template <typename RuntimeParams>
 RuntimeParamSnapshot CaptureRuntimeParamSnapshot(const RuntimeParams* previous_runtime_params,
                                                  const RuntimeParams& fallback)
@@ -689,70 +778,39 @@ void SentryChassisController::RefreshCommandTransformCache(
 
 void SentryChassisController::FlushDeferredRealtimeWarnings()
 {
-  const int64_t NOW_NS = static_cast<int64_t>(ros::WallTime::now().toNSec());
-  int64_t next_flush_time_ns =
-      rt_warn_next_flush_time_ns_.load(std::memory_order_relaxed);
-  if (NOW_NS < next_flush_time_ns)
-  {
-    return;
-  }
-  const int64_t NEXT_FLUSH_TIME_NS =
-      NOW_NS + DEFERRED_RT_WARN_FLUSH_INTERVAL_NS;
-  if (!rt_warn_next_flush_time_ns_.compare_exchange_strong(
-          next_flush_time_ns, NEXT_FLUSH_TIME_NS, std::memory_order_relaxed,
-          std::memory_order_relaxed))
+  const int64_t now_ns = static_cast<int64_t>(ros::WallTime::now().toNSec());
+  if (!TryBeginDeferredWarningFlush(&rt_warn_next_flush_time_ns_, now_ns))
   {
     return;
   }
 
-  const auto FLUSH_WARNING = [](std::atomic<uint32_t>* counter,
-                                const char* message) {
-    const uint32_t COUNT = counter->exchange(0U, std::memory_order_relaxed);
-    if (COUNT > 0U)
-    {
-      ROS_WARN("%s (count=%u).", message, COUNT);
-    }
-  };
-  FLUSH_WARNING(&rt_warn_invalid_period_count_,
-                "Realtime update skipped due to non-positive period");
-  FLUSH_WARNING(&rt_warn_runtime_params_unready_count_,
-                "Realtime update skipped because runtime params are not ready");
-  FLUSH_WARNING(&rt_warn_command_buffer_unready_count_,
-                "Realtime update skipped because command buffer is not ready");
-  FLUSH_WARNING(&rt_warn_prepare_command_failed_count_,
-                "Realtime update skipped because command preparation failed");
-  FLUSH_WARNING(&rt_warn_transform_cache_unready_count_,
-                "Global command transform cache was not ready in realtime path");
-  FLUSH_WARNING(&rt_warn_transform_cache_stale_count_,
-                "Global command transform cache was stale or mismatched in realtime path");
-  FLUSH_WARNING(&rt_warn_odom_singular_count_,
-                "Forward kinematics was singular during realtime odometry");
-  FLUSH_WARNING(&rt_warn_odom_startup_hold_count_,
-                "Odom integration was suppressed by startup hold in realtime path");
-  FLUSH_WARNING(&rt_warn_odom_rejected_count_,
-                "Abnormal odom twist was rejected in realtime path");
+  const std::array<DeferredWarningRule, 9> warning_rules = {{
+      {&rt_warn_invalid_period_count_,
+       "Realtime update skipped due to non-positive period"},
+      {&rt_warn_runtime_params_unready_count_,
+       "Realtime update skipped because runtime params are not ready"},
+      {&rt_warn_command_buffer_unready_count_,
+       "Realtime update skipped because command buffer is not ready"},
+      {&rt_warn_prepare_command_failed_count_,
+       "Realtime update skipped because command preparation failed"},
+      {&rt_warn_transform_cache_unready_count_,
+       "Global command transform cache was not ready in realtime path"},
+      {&rt_warn_transform_cache_stale_count_,
+       "Global command transform cache was stale or mismatched in realtime path"},
+      {&rt_warn_odom_singular_count_,
+       "Forward kinematics was singular during realtime odometry"},
+      {&rt_warn_odom_startup_hold_count_,
+       "Odom integration was suppressed by startup hold in realtime path"},
+      {&rt_warn_odom_rejected_count_,
+       "Abnormal odom twist was rejected in realtime path"},
+  }};
+  FlushDeferredWarningCounters(warning_rules);
 
-  const uint32_t POWER_LIMIT_COUNT =
-      rt_warn_power_limit_active_count_.exchange(0U, std::memory_order_relaxed);
-  if (POWER_LIMIT_COUNT > 0U)
-  {
-    const double LAST_PREDICTED_POWER_W =
-        static_cast<double>(rt_warn_power_limit_last_predicted_milliwatt_.load(
-            std::memory_order_relaxed)) /
-        1000.0;
-    const double LAST_MAX_POWER_W =
-        static_cast<double>(rt_warn_power_limit_last_max_milliwatt_.load(
-            std::memory_order_relaxed)) /
-        1000.0;
-    const double LAST_SCALE =
-        static_cast<double>(rt_warn_power_limit_last_scale_milli_.load(
-            std::memory_order_relaxed)) /
-        1000.0;
-    ROS_WARN(
-        "Power limit was active in realtime path (count=%u, "
-        "last_predicted=%.3fW, last_max=%.3fW, last_scale=%.3f).",
-        POWER_LIMIT_COUNT, LAST_PREDICTED_POWER_W, LAST_MAX_POWER_W, LAST_SCALE);
-  }
+  FlushPowerLimitWarning(ConsumePowerLimitWarningSnapshot(
+      &rt_warn_power_limit_active_count_,
+      &rt_warn_power_limit_last_predicted_milliwatt_,
+      &rt_warn_power_limit_last_max_milliwatt_,
+      &rt_warn_power_limit_last_scale_milli_));
 }
 
 void SentryChassisController::InvalidateOdomPublishState()
