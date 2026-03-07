@@ -463,13 +463,22 @@ class SentryChassisControllerRuntimeParamsTestAccessor
 
   static void SetCommandTransformCache(
       SentryChassisController* controller, const std::array<double, 9>& rotation_matrix,
-      const ros::Time& stamp, bool valid)
+      const ros::Time& stamp, bool valid, uint64_t config_version = 0U)
   {
     SentryChassisController::CommandTransformCache cache;
     cache.rotation_matrix_row_major = rotation_matrix;
     cache.stamp = stamp;
+    cache.command_transform_config_version = config_version;
     cache.valid = valid;
     controller->command_transform_buffer_.writeFromNonRT(cache);
+  }
+
+  static SentryChassisController::CommandTransformCache ReadCommandTransformCache(
+      SentryChassisController* controller)
+  {
+    const SentryChassisController::CommandTransformCache* cache =
+        controller->command_transform_buffer_.readFromRT();
+    return cache != nullptr ? *cache : SentryChassisController::CommandTransformCache();
   }
 
   static bool ReadOdomPublishState(SentryChassisController* controller,
@@ -492,7 +501,7 @@ class SentryChassisControllerRuntimeParamsTestAccessor
       SentryChassisController* controller, SentryChassisController::CommandVelocityMode mode,
       const std::string& command_frame_id, const std::string& base_frame_id,
       const ros::Time& time, double vx, double vy, double wz,
-      Kinematics::ChassisTwist* output)
+      Kinematics::ChassisTwist* output, uint64_t config_version = 0U)
   {
     SentryChassisController::CommandData command;
     command.vx = vx;
@@ -505,6 +514,7 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     runtime_params.command_velocity_mode = mode;
     runtime_params.command_frame_id = command_frame_id;
     runtime_params.base_frame_id = base_frame_id;
+    runtime_params.command_transform_config_version = config_version;
     return controller->ResolveCommandInBaseFrame(command, time, runtime_params, output);
   }
 
@@ -710,6 +720,81 @@ TEST(SentryChassisControllerRuntimeParams,
 }
 
 TEST(SentryChassisControllerRuntimeParams,
+     ValidateAndApplyControllerParamsBumpsCommandTransformVersionOnlyWhenCommandConfigChanges)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+
+  ASSERT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::ValidateAndApply(&controller, false));
+  const auto* runtime_params =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadRuntimeParams(&controller);
+  ASSERT_NE(runtime_params, nullptr);
+  const uint64_t INITIAL_TRANSFORM_VERSION =
+      runtime_params->command_transform_config_version;
+
+  SentryChassisControllerRuntimeParamsTestAccessor::SetWheelEffortLimit(
+      &controller, runtime_params->wheel_effort_limit + 1.0);
+  ASSERT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::ValidateAndApply(&controller, false));
+  runtime_params =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadRuntimeParams(&controller);
+  ASSERT_NE(runtime_params, nullptr);
+  EXPECT_EQ(INITIAL_TRANSFORM_VERSION, runtime_params->command_transform_config_version);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::SetModeText(&controller, "global");
+  SentryChassisControllerRuntimeParamsTestAccessor::SetCommandFrameId(&controller, "odom");
+  ASSERT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::ValidateAndApply(&controller, false));
+  runtime_params =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadRuntimeParams(&controller);
+  ASSERT_NE(runtime_params, nullptr);
+  EXPECT_EQ(INITIAL_TRANSFORM_VERSION + 1U,
+            runtime_params->command_transform_config_version);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::SetBaseFrameId(&controller,
+                                                                   "base_footprint");
+  ASSERT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::ValidateAndApply(&controller, false));
+  runtime_params =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadRuntimeParams(&controller);
+  ASSERT_NE(runtime_params, nullptr);
+  EXPECT_EQ(INITIAL_TRANSFORM_VERSION + 2U,
+            runtime_params->command_transform_config_version);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     ValidateAndApplyControllerParamsKeepsCommandTransformCacheWhenCommandConfigUnchanged)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  SentryChassisControllerRuntimeParamsTestAccessor::SetModeText(&controller, "global");
+  SentryChassisControllerRuntimeParamsTestAccessor::SetCommandFrameId(&controller, "odom");
+
+  ASSERT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::ValidateAndApply(&controller, false));
+  const auto* runtime_params =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadRuntimeParams(&controller);
+  ASSERT_NE(runtime_params, nullptr);
+  const std::array<double, 9> identity_rotation = {
+      {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+  SentryChassisControllerRuntimeParamsTestAccessor::SetCommandTransformCache(
+      &controller, identity_rotation, ros::Time(1.0), true,
+      runtime_params->command_transform_config_version);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::SetWheelEffortLimit(
+      &controller, runtime_params->wheel_effort_limit + 1.0);
+  ASSERT_TRUE(
+      SentryChassisControllerRuntimeParamsTestAccessor::ValidateAndApply(&controller, false));
+
+  const auto cache =
+      SentryChassisControllerRuntimeParamsTestAccessor::ReadCommandTransformCache(&controller);
+  EXPECT_TRUE(cache.valid);
+  EXPECT_EQ(runtime_params->command_transform_config_version,
+            cache.command_transform_config_version);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
      ApplyRuntimeParamsInUpdateResetsOdometryWhenFrameConfigVersionChanges)
 {
   EnsureRosTimeInitialized();
@@ -806,15 +891,31 @@ TEST(SentryChassisControllerRuntimeParams,
   const std::array<double, 9> quarter_turn_rotation = {
       {0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0}};
   SentryChassisControllerRuntimeParamsTestAccessor::SetCommandTransformCache(
-      &controller, quarter_turn_rotation, ros::Time(1.0), true);
+      &controller, quarter_turn_rotation, ros::Time(1.0), true, 1U);
 
   Kinematics::ChassisTwist resolved;
   ASSERT_TRUE(SentryChassisControllerRuntimeParamsTestAccessor::ResolveCommandInBaseFrame(
       &controller, SentryChassisController::CommandVelocityMode::GLOBAL, "odom",
-      "base_link", ros::Time(1.0), 1.0, 0.0, 0.3, &resolved));
+      "base_link", ros::Time(1.0), 1.0, 0.0, 0.3, &resolved, 1U));
   EXPECT_NEAR(0.0, resolved.vx, 1e-9);
   EXPECT_NEAR(1.0, resolved.vy, 1e-9);
   EXPECT_NEAR(0.3, resolved.wz, 1e-9);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     ResolveCommandInBaseFrameGlobalModeRejectsMismatchedTransformConfigVersion)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  const std::array<double, 9> identity_rotation = {
+      {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
+  SentryChassisControllerRuntimeParamsTestAccessor::SetCommandTransformCache(
+      &controller, identity_rotation, ros::Time(1.0), true, 1U);
+
+  Kinematics::ChassisTwist resolved;
+  EXPECT_FALSE(SentryChassisControllerRuntimeParamsTestAccessor::ResolveCommandInBaseFrame(
+      &controller, SentryChassisController::CommandVelocityMode::GLOBAL, "odom",
+      "base_link", ros::Time(1.0), 0.4, -0.1, 0.2, &resolved, 2U));
 }
 
 TEST(SentryChassisControllerRuntimeParams,

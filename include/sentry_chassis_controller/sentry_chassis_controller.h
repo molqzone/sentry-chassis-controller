@@ -183,6 +183,7 @@ class SentryChassisController
     std::string base_frame_id = "base_link";
     uint64_t odom_frame_config_version = 0;
     uint64_t odom_publish_config_version = 0;
+    uint64_t command_transform_config_version = 0;
     double cmd_vel_timeout = 0.25;
     double odom_startup_hold_sec = 1.0;
     double odom_max_linear_speed = 8.0;
@@ -215,6 +216,7 @@ class SentryChassisController
     std::array<double, 9> rotation_matrix_row_major{
         {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}};
     ros::Time stamp;
+    uint64_t command_transform_config_version = 0;
     bool valid = false;
   };
 

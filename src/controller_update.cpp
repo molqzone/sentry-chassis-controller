@@ -201,6 +201,12 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   const std::string PREVIOUS_BASE_FRAME_ID =
       previous_runtime_params != nullptr ? previous_runtime_params->base_frame_id
                                          : params.base_frame_id;
+  const CommandVelocityMode PREVIOUS_COMMAND_VELOCITY_MODE =
+      previous_runtime_params != nullptr ? previous_runtime_params->command_velocity_mode
+                                         : params.command_velocity_mode;
+  const std::string PREVIOUS_COMMAND_FRAME_ID =
+      previous_runtime_params != nullptr ? previous_runtime_params->command_frame_id
+                                         : params.command_frame_id;
   const bool PREVIOUS_PUBLISH_TF =
       previous_runtime_params != nullptr ? previous_runtime_params->publish_tf : params.publish_tf;
   const uint64_t PREVIOUS_ODOM_FRAME_CONFIG_VERSION =
@@ -209,6 +215,10 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
   const uint64_t PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION =
       previous_runtime_params != nullptr ? previous_runtime_params->odom_publish_config_version
                                          : params.odom_publish_config_version;
+  const uint64_t PREVIOUS_COMMAND_TRANSFORM_CONFIG_VERSION =
+      previous_runtime_params != nullptr
+          ? previous_runtime_params->command_transform_config_version
+          : params.command_transform_config_version;
 
   struct PositiveFallbackRule
   {
@@ -396,9 +406,20 @@ bool SentryChassisController::ValidateAndApplyControllerParams(bool strict_valid
                                            ? PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION + 1U
                                            : PREVIOUS_ODOM_PUBLISH_CONFIG_VERSION;
 
+  const bool COMMAND_TRANSFORM_CONFIG_CHANGED =
+      PREVIOUS_COMMAND_VELOCITY_MODE != params.command_velocity_mode ||
+      PREVIOUS_COMMAND_FRAME_ID != params.command_frame_id ||
+      PREVIOUS_BASE_FRAME_ID != params.base_frame_id;
+  params.command_transform_config_version = COMMAND_TRANSFORM_CONFIG_CHANGED
+                                                ? PREVIOUS_COMMAND_TRANSFORM_CONFIG_VERSION + 1U
+                                                : PREVIOUS_COMMAND_TRANSFORM_CONFIG_VERSION;
+
   runtime_params_buffer_.writeFromNonRT(params);
-  InvalidateCommandTransformCache();
-  RefreshCommandTransformCache(ros::TimerEvent());
+  if (COMMAND_TRANSFORM_CONFIG_CHANGED)
+  {
+    InvalidateCommandTransformCache();
+    RefreshCommandTransformCache(ros::TimerEvent());
+  }
   return true;
 }
 
@@ -434,6 +455,8 @@ void SentryChassisController::RefreshCommandTransformCache(
   {
     cache.valid = true;
     cache.stamp = ros::Time::now();
+    cache.command_transform_config_version =
+        runtime_params->command_transform_config_version;
     command_transform_buffer_.writeFromNonRT(cache);
     return;
   }
@@ -504,6 +527,8 @@ void SentryChassisController::RefreshCommandTransformCache(
   }
   cache.valid = true;
   cache.stamp = command_to_base_transform.header.stamp;
+  cache.command_transform_config_version =
+      runtime_params->command_transform_config_version;
   command_transform_buffer_.writeFromNonRT(cache);
 }
 
@@ -544,7 +569,7 @@ void SentryChassisController::FlushDeferredRealtimeWarnings()
   FLUSH_WARNING(&rt_warn_transform_cache_unready_count_,
                 "Global command transform cache was not ready in realtime path");
   FLUSH_WARNING(&rt_warn_transform_cache_stale_count_,
-                "Global command transform cache was stale in realtime path");
+                "Global command transform cache was stale or mismatched in realtime path");
   FLUSH_WARNING(&rt_warn_odom_singular_count_,
                 "Forward kinematics was singular during realtime odometry");
   FLUSH_WARNING(&rt_warn_odom_startup_hold_count_,
@@ -869,6 +894,12 @@ bool SentryChassisController::ResolveCommandInBaseFrame(const CommandData& comma
   if (command_transform == nullptr || !command_transform->valid)
   {
     rt_warn_transform_cache_unready_count_.fetch_add(1U, std::memory_order_relaxed);
+    return false;
+  }
+  if (command_transform->command_transform_config_version !=
+      runtime_params.command_transform_config_version)
+  {
+    rt_warn_transform_cache_stale_count_.fetch_add(1U, std::memory_order_relaxed);
     return false;
   }
   if (command_transform->stamp.isZero() ||
