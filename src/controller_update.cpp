@@ -1077,6 +1077,50 @@ bool SentryChassisController::ResolveCommandInBaseFrame(const CommandData& comma
   return true;
 }
 
+bool SentryChassisController::ComputeCommandTimeout(
+    const CommandData& command, const ros::Time& time,
+    const RuntimeParams& runtime_params) const
+{
+  const bool command_from_current_session = command.stamp >= controller_start_time_;
+  const bool command_valid_for_update = command.valid && command_from_current_session;
+  return IsCommandTimedOut(command_valid_for_update, command.stamp, time,
+                           runtime_params.cmd_vel_timeout);
+}
+
+void SentryChassisController::UpdateCommandTimeoutState(bool timeout)
+{
+  if (timeout && !last_command_timed_out_)
+  {
+    for (auto& pid : wheel_pids_)
+    {
+      pid.reset();
+    }
+  }
+  last_command_timed_out_ = timeout;
+}
+
+void SentryChassisController::PrepareBaseCommandTwistForControl(
+    const CommandData& command, const ros::Time& time,
+    const RuntimeParams& runtime_params, bool timeout,
+    Kinematics::ChassisTwist* command_twist_base)
+{
+  if (command_twist_base == nullptr)
+  {
+    return;
+  }
+
+  *command_twist_base = Kinematics::ChassisTwist();
+  if (timeout)
+  {
+    has_last_limited_command_ = false;
+    return;
+  }
+  if (!ResolveCommandInBaseFrame(command, time, runtime_params, command_twist_base))
+  {
+    *command_twist_base = Kinematics::ChassisTwist();
+  }
+}
+
 bool SentryChassisController::PrepareCommandForControl(
     const CommandData& command, const ros::Time& time, double dt,
     const RuntimeParams& runtime_params,
@@ -1087,38 +1131,17 @@ bool SentryChassisController::PrepareCommandForControl(
     return false;
   }
 
-  const bool COMMAND_FROM_CURRENT_SESSION = command.stamp >= controller_start_time_;
-  const bool COMMAND_VALID_FOR_UPDATE = command.valid && COMMAND_FROM_CURRENT_SESSION;
-  const bool TIMEOUT = IsCommandTimedOut(COMMAND_VALID_FOR_UPDATE, command.stamp, time,
-                                         runtime_params.cmd_vel_timeout);
-  if (TIMEOUT && !last_command_timed_out_)
-  {
-    for (auto& pid : wheel_pids_)
-    {
-      pid.reset();
-    }
-  }
-  last_command_timed_out_ = TIMEOUT;
+  const bool command_timed_out =
+      ComputeCommandTimeout(command, time, runtime_params);
+  UpdateCommandTimeoutState(command_timed_out);
 
-  Kinematics::ChassisTwist command_twist_base{};
-  if (!TIMEOUT)
-  {
-    const bool COMMAND_RESOLVED =
-        ResolveCommandInBaseFrame(command, time, runtime_params, &command_twist_base);
-    if (!COMMAND_RESOLVED)
-    {
-      command_twist_base = Kinematics::ChassisTwist();
-    }
-  }
-  else
-  {
-    has_last_limited_command_ = false;
-  }
-
+  Kinematics::ChassisTwist command_twist_base;
+  PrepareBaseCommandTwistForControl(command, time, runtime_params,
+                                    command_timed_out, &command_twist_base);
   *limited_command_twist_base = command_twist_base;
   ApplyAccelerationLimits(command_twist_base, dt, runtime_params,
                           limited_command_twist_base);
-  *timeout = TIMEOUT;
+  *timeout = command_timed_out;
   return true;
 }
 

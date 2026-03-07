@@ -371,6 +371,29 @@ class SentryChassisController
                                 bool* timeout);
 
   /**
+   * @brief  判断当前指令在本周期是否超时
+   *         Computes whether current command is timed out for this cycle
+   */
+  bool ComputeCommandTimeout(const CommandData& command, const ros::Time& time,
+                             const RuntimeParams& runtime_params) const;
+
+  /**
+   * @brief  根据超时边沿同步控制状态
+   *         Synchronizes controller state on timeout transitions
+   */
+  void UpdateCommandTimeoutState(bool timeout);
+
+  /**
+   * @brief  准备喂给限幅器的底盘坐标系指令
+   *         Prepares base-frame chassis command that feeds the limiter
+   */
+  void PrepareBaseCommandTwistForControl(const CommandData& command,
+                                         const ros::Time& time,
+                                         const RuntimeParams& runtime_params,
+                                         bool timeout,
+                                         Kinematics::ChassisTwist* command_twist_base);
+
+  /**
    * @brief  基于底盘指令计算并下发舵向/轮速控制
    *         Computes and applies steering/wheel control from chassis command
    */
