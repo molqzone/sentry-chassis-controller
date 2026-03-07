@@ -1374,6 +1374,22 @@ TEST(SentryChassisControllerRuntimeParams, ApplyPowerLimitingScalesEffortsWhenOv
 }
 
 TEST(SentryChassisControllerRuntimeParams,
+     ApplyPowerLimitingSolvesQuadraticEffortModelWhenLossTermIsActive)
+{
+  SentryChassisController controller;
+  const std::array<double, 4> wheel_velocities = {{0.0, 0.0, 0.0, 0.0}};
+  const std::array<double, 4> wheel_efforts = {{2.0, 2.0, 2.0, 2.0}};
+  const auto limited_efforts =
+      SentryChassisControllerRuntimeParamsTestAccessor::ApplyPowerLimiting(
+          &controller, wheel_velocities, wheel_efforts, true, false,
+          4.0, 1.0, 0.0, 0.1);
+  EXPECT_NEAR(1.0, limited_efforts[0], 1e-9);
+  EXPECT_NEAR(1.0, limited_efforts[1], 1e-9);
+  EXPECT_NEAR(1.0, limited_efforts[2], 1e-9);
+  EXPECT_NEAR(1.0, limited_efforts[3], 1e-9);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
      FlushDeferredRealtimeWarningsHonorsFlushWindow)
 {
   SentryChassisController controller;

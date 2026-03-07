@@ -31,6 +31,105 @@ struct WheelTargetPlan
   std::array<bool, SentryChassisController::WHEEL_COUNT> wheel_pid_reset_flags{};
 };
 
+struct PowerLimitComputation
+{
+  double output_power = 0.0;
+  double quadratic_effort_term = 0.0;
+  double velocity_loss_term = 0.0;
+  double predicted_input_power = 0.0;
+};
+
+template <typename RuntimeParams>
+PowerLimitComputation ComputePowerLimitComputation(
+    const RuntimeParams& runtime_params,
+    const std::array<double, SentryChassisController::WHEEL_COUNT>& signed_wheel_velocities,
+    const std::array<double, SentryChassisController::WHEEL_COUNT>& signed_wheel_efforts)
+{
+  PowerLimitComputation computation;
+  double effort_square_sum = 0.0;
+  double velocity_square_sum = 0.0;
+  for (std::size_t index = 0; index < SentryChassisController::WHEEL_COUNT; ++index)
+  {
+    const double effort = signed_wheel_efforts[index];
+    const double velocity = signed_wheel_velocities[index];
+    computation.output_power += std::fabs(effort * velocity);
+    effort_square_sum += effort * effort;
+    velocity_square_sum += velocity * velocity;
+  }
+
+  computation.quadratic_effort_term = runtime_params.power_loss_k1 * effort_square_sum;
+  computation.velocity_loss_term = runtime_params.power_loss_k2 * velocity_square_sum;
+  computation.predicted_input_power =
+      computation.output_power + computation.quadratic_effort_term +
+      computation.velocity_loss_term;
+  return computation;
+}
+
+template <typename RuntimeParams>
+double ComputePowerLimitScale(const RuntimeParams& runtime_params,
+                              const PowerLimitComputation& computation)
+{
+  const double POWER_BUDGET_WITHOUT_VELOCITY_LOSS =
+      runtime_params.max_power - computation.velocity_loss_term;
+  double scale = runtime_params.min_power_scale;
+  if (POWER_BUDGET_WITHOUT_VELOCITY_LOSS <= 0.0)
+  {
+    return scale;
+  }
+  if (computation.quadratic_effort_term > MIN_VALID_DT)
+  {
+    // Solve quadratic_effort_term * s^2 + output_power * s = budget for s in (0, 1].
+    const double DISCRIMINANT =
+        computation.output_power * computation.output_power +
+        4.0 * computation.quadratic_effort_term * POWER_BUDGET_WITHOUT_VELOCITY_LOSS;
+    if (DISCRIMINANT > 0.0)
+    {
+      scale = (-computation.output_power + std::sqrt(DISCRIMINANT)) /
+              (2.0 * computation.quadratic_effort_term);
+    }
+  }
+  else if (computation.output_power > MIN_VALID_DT)
+  {
+    scale = POWER_BUDGET_WITHOUT_VELOCITY_LOSS / computation.output_power;
+  }
+  return std::max(runtime_params.min_power_scale, std::min(1.0, scale));
+}
+
+void ScaleWheelEfforts(double scale,
+                       std::array<double, SentryChassisController::WHEEL_COUNT>* efforts)
+{
+  if (efforts == nullptr)
+  {
+    return;
+  }
+
+  for (double& effort : *efforts)
+  {
+    effort *= scale;
+  }
+}
+
+void StorePowerLimitWarningSnapshot(
+    std::atomic<uint32_t>* active_count, std::atomic<int32_t>* predicted_milliwatt,
+    std::atomic<int32_t>* max_milliwatt, std::atomic<int32_t>* scale_milli,
+    const PowerLimitComputation& computation, double max_power, double scale)
+{
+  if (active_count == nullptr || predicted_milliwatt == nullptr ||
+      max_milliwatt == nullptr || scale_milli == nullptr)
+  {
+    return;
+  }
+
+  active_count->fetch_add(1U, std::memory_order_relaxed);
+  predicted_milliwatt->store(
+      static_cast<int32_t>(std::round(computation.predicted_input_power * 1000.0)),
+      std::memory_order_relaxed);
+  max_milliwatt->store(static_cast<int32_t>(std::round(max_power * 1000.0)),
+                       std::memory_order_relaxed);
+  scale_milli->store(static_cast<int32_t>(std::round(scale * 1000.0)),
+                     std::memory_order_relaxed);
+}
+
 constexpr int64_t DEFERRED_RT_WARN_FLUSH_INTERVAL_NS = 1000000000LL;
 
 bool ShouldEnableSteerPriorityMode(
@@ -1017,67 +1116,24 @@ void SentryChassisController::ApplyPowerLimiting(
     return;
   }
 
-  double output_power = 0.0;
-  double effort_square_sum = 0.0;
-  double velocity_square_sum = 0.0;
-  for (std::size_t index = 0; index < WHEEL_COUNT; ++index)
-  {
-    const double effort = signed_wheel_efforts->at(index);
-    const double velocity = signed_wheel_velocities[index];
-    output_power += std::fabs(effort * velocity);
-    effort_square_sum += effort * effort;
-    velocity_square_sum += velocity * velocity;
-  }
-
-  const double QUADRATIC_EFFORT_TERM =
-      runtime_params.power_loss_k1 * effort_square_sum;
-  const double VELOCITY_LOSS_TERM =
-      runtime_params.power_loss_k2 * velocity_square_sum;
-  const double PREDICTED_INPUT_POWER =
-      output_power + QUADRATIC_EFFORT_TERM + VELOCITY_LOSS_TERM;
-  if (PREDICTED_INPUT_POWER <= runtime_params.max_power)
+  const PowerLimitComputation computation = ComputePowerLimitComputation(
+      runtime_params, signed_wheel_velocities, *signed_wheel_efforts);
+  if (computation.predicted_input_power <= runtime_params.max_power)
   {
     return;
   }
 
-  const double RHS = runtime_params.max_power - VELOCITY_LOSS_TERM;
-  double scale = runtime_params.min_power_scale;
-  if (RHS > 0.0)
-  {
-    if (QUADRATIC_EFFORT_TERM > MIN_VALID_DT)
-    {
-      // Solve QUADRATIC_EFFORT_TERM * s^2 + output_power * s = RHS for s in (0, 1].
-      const double DISCRIMINANT =
-          output_power * output_power + 4.0 * QUADRATIC_EFFORT_TERM * RHS;
-      if (DISCRIMINANT > 0.0)
-      {
-        scale = (-output_power + std::sqrt(DISCRIMINANT)) /
-                (2.0 * QUADRATIC_EFFORT_TERM);
-      }
-    }
-    else if (output_power > MIN_VALID_DT)
-    {
-      scale = RHS / output_power;
-    }
-  }
-  scale = std::max(runtime_params.min_power_scale, std::min(1.0, scale));
-  for (auto& effort : *signed_wheel_efforts)
-  {
-    effort *= scale;
-  }
+  const double scale = ComputePowerLimitScale(runtime_params, computation);
+  ScaleWheelEfforts(scale, signed_wheel_efforts);
 
   if (runtime_params.enable_power_limit_logging)
   {
-    rt_warn_power_limit_active_count_.fetch_add(1U, std::memory_order_relaxed);
-    rt_warn_power_limit_last_predicted_milliwatt_.store(
-        static_cast<int32_t>(std::round(PREDICTED_INPUT_POWER * 1000.0)),
-        std::memory_order_relaxed);
-    rt_warn_power_limit_last_max_milliwatt_.store(
-        static_cast<int32_t>(std::round(runtime_params.max_power * 1000.0)),
-        std::memory_order_relaxed);
-    rt_warn_power_limit_last_scale_milli_.store(
-        static_cast<int32_t>(std::round(scale * 1000.0)),
-        std::memory_order_relaxed);
+    StorePowerLimitWarningSnapshot(
+        &rt_warn_power_limit_active_count_,
+        &rt_warn_power_limit_last_predicted_milliwatt_,
+        &rt_warn_power_limit_last_max_milliwatt_,
+        &rt_warn_power_limit_last_scale_milli_, computation,
+        runtime_params.max_power, scale);
   }
 }
 
