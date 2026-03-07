@@ -241,6 +241,89 @@ void ApplyWheelDispatchCommands(
   }
 }
 
+enum class OdomTwistDisposition
+{
+  kIntegrate,
+  kSuppressOnTimeout,
+  kSuppressOnStartupHold,
+  kRejectOutOfRange,
+};
+
+Kinematics::WheelFeedback ReadWheelFeedback(
+    const std::array<hardware_interface::JointHandle,
+                     SentryChassisController::WHEEL_COUNT>& steer_joints,
+    const std::array<hardware_interface::JointHandle,
+                     SentryChassisController::WHEEL_COUNT>& wheel_joints)
+{
+  Kinematics::WheelFeedback feedback;
+  for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
+  {
+    feedback.steer_position[i] = steer_joints[i].getPosition();
+    feedback.wheel_angular_velocity[i] = wheel_joints[i].getVelocity();
+  }
+  return feedback;
+}
+
+bool TrySolveOdomTwist(
+    const Kinematics& kinematics, const Kinematics::WheelFeedback& feedback,
+    const std::array<double, SentryChassisController::WHEEL_COUNT>& steer_zero_offsets,
+    const std::array<int, SentryChassisController::WHEEL_COUNT>& wheel_rolling_signs,
+    Kinematics::ChassisTwist* odom_twist)
+{
+  if (odom_twist == nullptr)
+  {
+    return false;
+  }
+  return kinematics.ComputeChassisTwistFromWheelFeedback(
+      feedback, steer_zero_offsets, wheel_rolling_signs, odom_twist);
+}
+
+bool IsWithinOdomStartupHoldWindow(const ros::Time& time,
+                                   const ros::Time& controller_start_time,
+                                   double odom_startup_hold_sec)
+{
+  const double startup_age = (time - controller_start_time).toSec();
+  return startup_age >= 0.0 && startup_age < odom_startup_hold_sec;
+}
+
+template <typename IsOdomTwistAcceptableFn>
+OdomTwistDisposition ClassifyOdomTwistDisposition(
+    const ros::Time& time, const ros::Time& controller_start_time, bool timeout,
+    const SentryChassisController::RuntimeParams& runtime_params,
+    IsOdomTwistAcceptableFn is_odom_twist_acceptable)
+{
+  if (timeout && !runtime_params.odom_integrate_on_timeout)
+  {
+    return OdomTwistDisposition::kSuppressOnTimeout;
+  }
+  if (runtime_params.odom_integrate_on_timeout && timeout &&
+      IsWithinOdomStartupHoldWindow(time, controller_start_time,
+                                    runtime_params.odom_startup_hold_sec))
+  {
+    return OdomTwistDisposition::kSuppressOnStartupHold;
+  }
+  if (!is_odom_twist_acceptable())
+  {
+    return OdomTwistDisposition::kRejectOutOfRange;
+  }
+  return OdomTwistDisposition::kIntegrate;
+}
+
+void RecordOdomTwistDisposition(
+    OdomTwistDisposition disposition,
+    std::atomic<uint32_t>* odom_startup_hold_count,
+    std::atomic<uint32_t>* odom_rejected_count)
+{
+  if (disposition == OdomTwistDisposition::kSuppressOnStartupHold)
+  {
+    odom_startup_hold_count->fetch_add(1U, std::memory_order_relaxed);
+  }
+  else if (disposition == OdomTwistDisposition::kRejectOutOfRange)
+  {
+    odom_rejected_count->fetch_add(1U, std::memory_order_relaxed);
+  }
+}
+
 constexpr int64_t DEFERRED_RT_WARN_FLUSH_INTERVAL_NS = 1000000000LL;
 
 bool ShouldEnableSteerPriorityMode(
@@ -1406,51 +1489,30 @@ Kinematics::ChassisTwist SentryChassisController::ComputeAndIntegrateOdometry(
     const ros::Time& time, double dt, bool timeout,
     const RuntimeParams& runtime_params)
 {
-  Kinematics::WheelFeedback feedback;
-  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
-  {
-    feedback.steer_position[i] = steer_joints_[i].getPosition();
-    feedback.wheel_angular_velocity[i] = wheel_joints_[i].getVelocity();
-  }
+  const Kinematics::WheelFeedback feedback =
+      ReadWheelFeedback(steer_joints_, wheel_joints_);
 
   Kinematics::ChassisTwist odom_twist;
-  const bool ODOM_SOLVED = kinematics_.ComputeChassisTwistFromWheelFeedback(
-      feedback, steer_zero_offsets_, wheel_rolling_signs_, &odom_twist);
-  if (!ODOM_SOLVED)
+  if (!TrySolveOdomTwist(kinematics_, feedback, steer_zero_offsets_,
+                         wheel_rolling_signs_, &odom_twist))
   {
     rt_warn_odom_singular_count_.fetch_add(1U, std::memory_order_relaxed);
-    odom_twist = Kinematics::ChassisTwist();
+    return Kinematics::ChassisTwist();
   }
-  else
-  {
-    if (timeout && !runtime_params.odom_integrate_on_timeout)
-    {
-      odom_twist = Kinematics::ChassisTwist();
-    }
-    else
-    {
-      const double STARTUP_AGE = (time - controller_start_time_).toSec();
-      const bool IN_STARTUP_HOLD =
-          STARTUP_AGE >= 0.0 && STARTUP_AGE < runtime_params.odom_startup_hold_sec;
-      const bool SHOULD_SUPPRESS_STARTUP_DRIFT =
-          runtime_params.odom_integrate_on_timeout && timeout && IN_STARTUP_HOLD;
 
-      if (SHOULD_SUPPRESS_STARTUP_DRIFT)
-      {
-        odom_twist = Kinematics::ChassisTwist();
-        rt_warn_odom_startup_hold_count_.fetch_add(1U, std::memory_order_relaxed);
-      }
-      else if (!IsOdomTwistAcceptable(odom_twist, runtime_params))
-      {
-        rt_warn_odom_rejected_count_.fetch_add(1U, std::memory_order_relaxed);
-        odom_twist = Kinematics::ChassisTwist();
-      }
-      else
-      {
-        odom_state_ = IntegrateOdom(odom_state_, odom_twist, dt);
-      }
-    }
+  const OdomTwistDisposition disposition = ClassifyOdomTwistDisposition(
+      time, controller_start_time_, timeout, runtime_params,
+      [this, &odom_twist, &runtime_params]() {
+        return IsOdomTwistAcceptable(odom_twist, runtime_params);
+      });
+  if (disposition != OdomTwistDisposition::kIntegrate)
+  {
+    RecordOdomTwistDisposition(disposition, &rt_warn_odom_startup_hold_count_,
+                               &rt_warn_odom_rejected_count_);
+    return Kinematics::ChassisTwist();
   }
+
+  odom_state_ = IntegrateOdom(odom_state_, odom_twist, dt);
   return odom_twist;
 }
 

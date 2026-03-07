@@ -318,6 +318,20 @@ class SentryChassisControllerRuntimeParamsTestAccessor
     return controller->odom_state_;
   }
 
+  static uint32_t GetOdomStartupHoldWarningCount(
+      const SentryChassisController* controller)
+  {
+    return controller->rt_warn_odom_startup_hold_count_.load(
+        std::memory_order_relaxed);
+  }
+
+  static uint32_t GetOdomRejectedWarningCount(
+      const SentryChassisController* controller)
+  {
+    return controller->rt_warn_odom_rejected_count_.load(
+        std::memory_order_relaxed);
+  }
+
   static void SetAppliedOdomFrameConfigVersion(SentryChassisController* controller,
                                               uint64_t version)
   {
@@ -1356,6 +1370,110 @@ TEST(SentryChassisControllerRuntimeParams,
   const auto& odom_state =
       SentryChassisControllerRuntimeParamsTestAccessor::GetOdomState(&controller);
   EXPECT_GT(odom_state.x, 0.0);
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     UpdateMainPathSuppressesStartupHoldDriftWhenTimeoutIntegrationIsEnabled)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  UpdateJointStorage joint_storage;
+  const auto TEST_GEOMETRY = MakeValidTestGeometry();
+  const auto STEER_POSITIONS = MakeNonSingularSteerPositions();
+  joint_storage.steer_position = STEER_POSITIONS;
+  Kinematics::ChassisTwist expected_twist;
+  expected_twist.vx = 0.4;
+  expected_twist.vy = 0.1;
+  expected_twist.wz = 0.3;
+  joint_storage.wheel_velocity =
+      BuildWheelVelocityFromTwist(TEST_GEOMETRY, STEER_POSITIONS, expected_twist);
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateJointHandles(
+      &controller, &joint_storage);
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateLoopDependencies(
+      &controller);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RuntimeParams runtime_params;
+  runtime_params.command_velocity_mode =
+      SentryChassisController::CommandVelocityMode::BASE_LINK;
+  runtime_params.command_frame_id = "base_link";
+  runtime_params.base_frame_id = "base_link";
+  runtime_params.odom_frame_id = "odom";
+  runtime_params.cmd_vel_timeout = 0.1;
+  runtime_params.publish_tf = false;
+  runtime_params.odom_integrate_on_timeout = true;
+  runtime_params.odom_startup_hold_sec = 1.0;
+  runtime_params.enable_acceleration_limits = false;
+  runtime_params.enable_power_limit = false;
+  runtime_params.geometry = TEST_GEOMETRY;
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteRuntimeParamsSnapshot(
+      &controller, runtime_params);
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteCommandSnapshot(
+      &controller, 0.0, 0.0, 0.0, ros::Time(9.0), true);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetControllerStartTime(
+      &controller, ros::Time(10.0));
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RunUpdate(&controller, ros::Time(10.2),
+                                                              0.05);
+  const auto& odom_state =
+      SentryChassisControllerRuntimeParamsTestAccessor::GetOdomState(&controller);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.x);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.y);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.yaw);
+  EXPECT_EQ(1U,
+            SentryChassisControllerRuntimeParamsTestAccessor::
+                GetOdomStartupHoldWarningCount(&controller));
+}
+
+TEST(SentryChassisControllerRuntimeParams,
+     UpdateMainPathRejectsOutOfRangeOdomTwistAndRecordsWarning)
+{
+  EnsureRosTimeInitialized();
+  SentryChassisController controller;
+  UpdateJointStorage joint_storage;
+  const auto TEST_GEOMETRY = MakeValidTestGeometry();
+  const auto STEER_POSITIONS = MakeNonSingularSteerPositions();
+  joint_storage.steer_position = STEER_POSITIONS;
+  Kinematics::ChassisTwist expected_twist;
+  expected_twist.vx = 3.0;
+  expected_twist.vy = 0.0;
+  expected_twist.wz = 0.2;
+  joint_storage.wheel_velocity =
+      BuildWheelVelocityFromTwist(TEST_GEOMETRY, STEER_POSITIONS, expected_twist);
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateJointHandles(
+      &controller, &joint_storage);
+  SentryChassisControllerRuntimeParamsTestAccessor::ConfigureUpdateLoopDependencies(
+      &controller);
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RuntimeParams runtime_params;
+  runtime_params.command_velocity_mode =
+      SentryChassisController::CommandVelocityMode::BASE_LINK;
+  runtime_params.command_frame_id = "base_link";
+  runtime_params.base_frame_id = "base_link";
+  runtime_params.odom_frame_id = "odom";
+  runtime_params.cmd_vel_timeout = 0.5;
+  runtime_params.publish_tf = false;
+  runtime_params.odom_integrate_on_timeout = false;
+  runtime_params.odom_max_linear_speed = 1.0;
+  runtime_params.enable_acceleration_limits = false;
+  runtime_params.enable_power_limit = false;
+  runtime_params.geometry = TEST_GEOMETRY;
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteRuntimeParamsSnapshot(
+      &controller, runtime_params);
+  SentryChassisControllerRuntimeParamsTestAccessor::WriteCommandSnapshot(
+      &controller, 0.0, 0.0, 0.0, ros::Time(10.1), true);
+  SentryChassisControllerRuntimeParamsTestAccessor::SetControllerStartTime(
+      &controller, ros::Time(10.0));
+
+  SentryChassisControllerRuntimeParamsTestAccessor::RunUpdate(&controller, ros::Time(10.12),
+                                                              0.05);
+  const auto& odom_state =
+      SentryChassisControllerRuntimeParamsTestAccessor::GetOdomState(&controller);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.x);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.y);
+  EXPECT_DOUBLE_EQ(0.0, odom_state.yaw);
+  EXPECT_EQ(1U,
+            SentryChassisControllerRuntimeParamsTestAccessor::
+                GetOdomRejectedWarningCount(&controller));
 }
 
 TEST(SentryChassisControllerRuntimeParams, ApplyPowerLimitingScalesEffortsWhenOverBudget)
