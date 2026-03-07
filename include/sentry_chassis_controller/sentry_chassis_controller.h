@@ -254,6 +254,18 @@ class SentryChassisController
                     std::array<control_toolbox::Pid, WHEEL_COUNT>* pid_array);
 
   /**
+   * @brief  在动态调参模式下初始化单路 PID
+   *         Initializes one PID in dynamic-reconfigure mode
+   */
+  bool InitDynamicPid(ros::NodeHandle& pid_nh, control_toolbox::Pid* pid);
+
+  /**
+   * @brief  在静态参数模式下初始化单路 PID
+   *         Initializes one PID in static-parameter mode
+   */
+  bool InitStaticPid(ros::NodeHandle& pid_nh, control_toolbox::Pid* pid);
+
+  /**
    * @brief  加载控制器静态配置并初始化运行参数快照
    *         Loads static controller config and initializes runtime parameter snapshot
    */

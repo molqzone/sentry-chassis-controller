@@ -291,20 +291,9 @@ void SentryChassisController::InitRealtimeState()
   command.stamp = ros::Time(0);
   command.valid = false;
   command_buffer_.initRT(command);
-  CommandTransformCache command_transform_cache;
-  command_transform_cache.valid = false;
-  command_transform_buffer_.initRT(command_transform_cache);
+  command_transform_buffer_.initRT(BuildInvalidCommandTransformCache());
   odom_state_ = OdomState();
-  odom_publish_state_seq_.store(0U, std::memory_order_relaxed);
-  odom_publish_stamp_ns_.store(0U, std::memory_order_relaxed);
-  odom_publish_state_config_version_.store(0U, std::memory_order_relaxed);
-  odom_publish_x_.store(0.0, std::memory_order_relaxed);
-  odom_publish_y_.store(0.0, std::memory_order_relaxed);
-  odom_publish_yaw_.store(0.0, std::memory_order_relaxed);
-  odom_publish_vx_.store(0.0, std::memory_order_relaxed);
-  odom_publish_vy_.store(0.0, std::memory_order_relaxed);
-  odom_publish_wz_.store(0.0, std::memory_order_relaxed);
-  odom_publish_valid_.store(false, std::memory_order_relaxed);
+  InvalidateOdomPublishState();
   last_published_odom_sequence_ = 0U;
   last_limited_command_ = Kinematics::ChassisTwist();
   has_last_limited_command_ = false;
@@ -378,46 +367,71 @@ bool SentryChassisController::InitRuntimeDynamicReconfigure(ros::NodeHandle& nh)
   controller_params_reconfigure_->publishServicesTopics();
   return ValidateAndApplyControllerParams(true);
 }
+bool SentryChassisController::InitDynamicPid(ros::NodeHandle& pid_nh,
+                                              control_toolbox::Pid* pid)
+{
+  if (pid == nullptr)
+  {
+    return false;
+  }
+  // Dynamic mode: control_toolbox internally provides dynamic_reconfigure services.
+  if (!pid->init(pid_nh, false))
+  {
+    ROS_ERROR("Failed to initialize PID at namespace '%s'.",
+              pid_nh.getNamespace().c_str());
+    return false;
+  }
+  return true;
+}
+
+bool SentryChassisController::InitStaticPid(ros::NodeHandle& pid_nh,
+                                            control_toolbox::Pid* pid)
+{
+  if (pid == nullptr)
+  {
+    return false;
+  }
+  // Fixed mode: read static YAML parameters without dynamic reconfigure endpoint.
+  double p = 0.0;
+  double i_gain = 0.0;
+  double d = 0.0;
+  double i_clamp_min = 0.0;
+  double i_clamp_max = 0.0;
+  bool antiwindup = false;
+
+  if (!pid_nh.getParam("p", p) || !pid_nh.getParam("i", i_gain) ||
+      !pid_nh.getParam("d", d) || !pid_nh.getParam("i_clamp_min", i_clamp_min) ||
+      !pid_nh.getParam("i_clamp_max", i_clamp_max))
+  {
+    ROS_ERROR("Missing PID parameters at namespace '%s'.",
+              pid_nh.getNamespace().c_str());
+    return false;
+  }
+  pid_nh.param("antiwindup", antiwindup, false);
+  pid->initPid(p, i_gain, d, i_clamp_max, i_clamp_min, antiwindup);
+  return true;
+}
+
 bool SentryChassisController::InitPidGroup(
     ros::NodeHandle& nh, const std::string& pid_group,
     std::array<control_toolbox::Pid, WHEEL_COUNT>* pid_array)
 {
+  if (pid_array == nullptr)
+  {
+    return false;
+  }
+
   for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
   {
-    const std::string NS = "pid/" + pid_group + "/" + WHEEL_NAME_SUFFIX[i];
-    ros::NodeHandle pid_nh(nh, NS);
-    if (enable_dynamic_reconfigure_)
+    const std::string ns = "pid/" + pid_group + "/" + WHEEL_NAME_SUFFIX[i];
+    ros::NodeHandle pid_nh(nh, ns);
+    control_toolbox::Pid* pid = &pid_array->at(i);
+    const bool initialized = enable_dynamic_reconfigure_
+                                 ? InitDynamicPid(pid_nh, pid)
+                                 : InitStaticPid(pid_nh, pid);
+    if (!initialized)
     {
-      // 动态调参模式：由 control_toolbox 自动挂载 dynamic_reconfigure 服务。
-      // Dynamic mode: control_toolbox internally provides dynamic_reconfigure services.
-      if (!pid_array->at(i).init(pid_nh, false))
-      {
-        ROS_ERROR("Failed to initialize PID at namespace '%s'.",
-                  pid_nh.getNamespace().c_str());
-        return false;
-      }
-    }
-    else
-    {
-      // 固定参数模式：直接读取静态 YAML 参数，不注册动态调参接口。
-      // Fixed mode: read static YAML parameters without dynamic reconfigure endpoint.
-      double p = 0.0;
-      double i_gain = 0.0;
-      double d = 0.0;
-      double i_clamp_min = 0.0;
-      double i_clamp_max = 0.0;
-      bool antiwindup = false;
-
-      if (!pid_nh.getParam("p", p) || !pid_nh.getParam("i", i_gain) ||
-          !pid_nh.getParam("d", d) || !pid_nh.getParam("i_clamp_min", i_clamp_min) ||
-          !pid_nh.getParam("i_clamp_max", i_clamp_max))
-      {
-        ROS_ERROR("Missing PID parameters at namespace '%s'.",
-                  pid_nh.getNamespace().c_str());
-        return false;
-      }
-      pid_nh.param("antiwindup", antiwindup, false);
-      pid_array->at(i).initPid(p, i_gain, d, i_clamp_max, i_clamp_min, antiwindup);
+      return false;
     }
   }
   return true;
