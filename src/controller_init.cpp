@@ -4,8 +4,87 @@
 #include <Eigen/Dense>
 #include <hardware_interface/internal/hardware_resource_manager.h>
 
+#include <initializer_list>
+
 namespace sentry_chassis_controller
 {
+namespace
+{
+struct StringRuntimeParamSpec
+{
+  const char* name;
+  std::string* value;
+  const char* description;
+};
+
+struct BoolRuntimeParamSpec
+{
+  const char* name;
+  bool* value;
+  const char* description;
+};
+
+struct DoubleRuntimeParamSpec
+{
+  const char* name;
+  double* value;
+  const char* description;
+  double min_value;
+  double max_value;
+};
+
+void RegisterStringRuntimeParams(
+    ddynamic_reconfigure::DDynamicReconfigure* parameter_loader,
+    std::initializer_list<StringRuntimeParamSpec> params)
+{
+  if (parameter_loader == nullptr)
+  {
+    return;
+  }
+
+  for (const StringRuntimeParamSpec& param : params)
+  {
+    parameter_loader->registerVariable<std::string>(
+        param.name, param.value, boost::function<void(std::string)>(),
+        param.description, std::string(), std::string());
+  }
+}
+
+void RegisterBoolRuntimeParams(
+    ddynamic_reconfigure::DDynamicReconfigure* parameter_loader,
+    std::initializer_list<BoolRuntimeParamSpec> params)
+{
+  if (parameter_loader == nullptr)
+  {
+    return;
+  }
+
+  for (const BoolRuntimeParamSpec& param : params)
+  {
+    parameter_loader->registerVariable<bool>(
+        param.name, param.value, boost::function<void(bool)>(), param.description,
+        false, true);
+  }
+}
+
+void RegisterDoubleRuntimeParams(
+    ddynamic_reconfigure::DDynamicReconfigure* parameter_loader,
+    std::initializer_list<DoubleRuntimeParamSpec> params)
+{
+  if (parameter_loader == nullptr)
+  {
+    return;
+  }
+
+  for (const DoubleRuntimeParamSpec& param : params)
+  {
+    parameter_loader->registerVariable<double>(
+        param.name, param.value, param.description, param.min_value,
+        param.max_value);
+  }
+}
+}  // namespace
+
 bool SentryChassisController::init(hardware_interface::EffortJointInterface* hw,
                                    ros::NodeHandle& nh)
 {
@@ -130,17 +209,15 @@ void SentryChassisController::RegisterInitParameters(
     return;
   }
 
-  parameter_loader->registerVariable<std::string>(
-      "cmd_vel_topic", &cmd_vel_topic_, boost::function<void(std::string)>(),
-      "cmd_vel topic name.", std::string(), std::string());
-  parameter_loader->registerVariable<bool>("enable_dynamic_reconfigure",
-                                          &enable_dynamic_reconfigure_,
-                                          boost::function<void(bool)>(),
-                                          "Enable dynamic reconfigure.", false, true);
-  parameter_loader->registerVariable<std::string>("odom_topic", &odom_topic_,
-                                                 boost::function<void(std::string)>(),
-                                                 "Odometry topic name.",
-                                                 std::string(), std::string());
+  RegisterStringRuntimeParams(parameter_loader,
+                              {{"cmd_vel_topic", &cmd_vel_topic_,
+                                "cmd_vel topic name."},
+                               {"odom_topic", &odom_topic_,
+                                "Odometry topic name."}});
+  RegisterBoolRuntimeParams(parameter_loader,
+                            {{"enable_dynamic_reconfigure",
+                              &enable_dynamic_reconfigure_,
+                              "Enable dynamic reconfigure."}});
 }
 
 bool SentryChassisController::LoadAndApplyKinematicsConfig(ros::NodeHandle& nh)
@@ -174,88 +251,82 @@ void SentryChassisController::RegisterSharedRuntimeParameters(
       "command_velocity_mode", &command_velocity_mode_text_,
       "Velocity command interpretation mode.", COMMAND_VELOCITY_MODE_OPTIONS,
       "base_link/global");
-  parameter_loader->registerVariable<std::string>(
-      "command_frame_id", &runtime_params_shadow_.command_frame_id,
-      boost::function<void(std::string)>(), "Velocity command frame id.",
-      std::string(), std::string());
-  parameter_loader->registerVariable<std::string>(
-      "odom_frame_id", &runtime_params_shadow_.odom_frame_id, boost::function<void(std::string)>(),
-      "Odometry frame id.", std::string(), std::string());
-  parameter_loader->registerVariable<std::string>(
-      "base_frame_id", &runtime_params_shadow_.base_frame_id, boost::function<void(std::string)>(),
-      "Base frame id.", std::string(), std::string());
-  parameter_loader->registerVariable<double>(
-      "cmd_vel_timeout", &runtime_params_shadow_.cmd_vel_timeout, "cmd_vel timeout in seconds.", 0.0, 10.0);
-  parameter_loader->registerVariable<double>(
-      "odom_startup_hold_sec", &runtime_params_shadow_.odom_startup_hold_sec,
-      "Startup hold window for odom integration.", 0.0, 20.0);
-  parameter_loader->registerVariable<double>(
-      "odom_max_linear_speed", &runtime_params_shadow_.odom_max_linear_speed,
-      "Maximum acceptable odom linear speed.", MIN_VALID_DT, 50.0);
-  parameter_loader->registerVariable<double>(
-      "odom_max_angular_speed", &runtime_params_shadow_.odom_max_angular_speed,
-      "Maximum acceptable odom angular speed.", MIN_VALID_DT, 100.0);
-  parameter_loader->registerVariable<bool>(
-      "odom_integrate_on_timeout", &runtime_params_shadow_.odom_integrate_on_timeout,
-      boost::function<void(bool)>(), "Integrate odom when cmd_vel times out.", false,
-      true);
-  parameter_loader->registerVariable<bool>(
-      "publish_tf", &runtime_params_shadow_.publish_tf, boost::function<void(bool)>(),
-      "Publish odom to base_link transform.", false, true);
-  parameter_loader->registerVariable<double>(
-      "wheel_effort_limit", &runtime_params_shadow_.wheel_effort_limit,
-      "Absolute wheel effort limit.", MIN_VALID_DT, 100.0);
-  parameter_loader->registerVariable<double>(
-      "reverse_ccw_vx_scale", &runtime_params_shadow_.reverse_ccw_vx_scale,
-      "Reverse-CCW compensation vx scale.", MIN_REVERSE_CCW_VX_SCALE,
-      MAX_REVERSE_CCW_VX_SCALE);
-  parameter_loader->registerVariable<double>(
-      "reverse_ccw_wz_gain", &runtime_params_shadow_.reverse_ccw_wz_gain,
-      "Reverse-CCW compensation wz gain.", MIN_REVERSE_CCW_WZ_GAIN,
-      MAX_REVERSE_CCW_WZ_GAIN);
-  parameter_loader->registerVariable<double>(
-      "reverse_ccw_vy_threshold", &runtime_params_shadow_.reverse_ccw_vy_threshold,
-      "Reverse-CCW compensation |vy| trigger threshold.",
-      MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD);
-  parameter_loader->registerVariable<double>(
-      "reverse_ccw_steer_priority_error", &runtime_params_shadow_.reverse_ccw_steer_priority_error,
-      "Reverse-CCW steering-priority error threshold.",
-      MIN_REVERSE_CCW_STEER_PRIORITY_ERROR, MAX_REVERSE_CCW_STEER_PRIORITY_ERROR);
-  parameter_loader->registerVariable<bool>(
-      "enable_acceleration_limits", &runtime_params_shadow_.enable_acceleration_limits,
-      boost::function<void(bool)>(), "Enable chassis acceleration limits.", false, true);
-  parameter_loader->registerVariable<double>(
-      "max_linear_acceleration", &runtime_params_shadow_.max_linear_acceleration,
-      "Maximum chassis linear acceleration in m/s^2.", MIN_ACCELERATION_LIMIT, 100.0);
-  parameter_loader->registerVariable<double>(
-      "max_angular_acceleration", &runtime_params_shadow_.max_angular_acceleration,
-      "Maximum chassis angular acceleration in rad/s^2.", MIN_ACCELERATION_LIMIT, 200.0);
-  parameter_loader->registerVariable<bool>(
-      "enable_power_limit", &runtime_params_shadow_.enable_power_limit, boost::function<void(bool)>(),
-      "Enable wheel power limiting.", false, true);
-  parameter_loader->registerVariable<bool>(
-      "enable_power_limit_logging", &runtime_params_shadow_.enable_power_limit_logging,
-      boost::function<void(bool)>(), "Enable power limiting status logging.", false, true);
-  parameter_loader->registerVariable<double>(
-      "max_power", &runtime_params_shadow_.max_power, "Maximum allowed wheel power in watts.",
-      MIN_POWER_LIMIT, 2000.0);
-  parameter_loader->registerVariable<double>(
-      "power_loss_k1", &runtime_params_shadow_.power_loss_k1,
-      "Quadratic torque loss coefficient for power model.", 0.0, 1.0);
-  parameter_loader->registerVariable<double>(
-      "power_loss_k2", &runtime_params_shadow_.power_loss_k2,
-      "Quadratic speed loss coefficient for power model.", 0.0, 1.0);
-  parameter_loader->registerVariable<double>(
-      "min_power_scale", &runtime_params_shadow_.min_power_scale,
-      "Lower bound for power limiting scale factor.", MIN_POWER_SCALE, MAX_POWER_SCALE);
-  parameter_loader->registerVariable<double>(
-      "geometry/wheel_base", &runtime_params_shadow_.geometry.wheel_base, "Wheel base in meters.", 0.0, 5.0);
-  parameter_loader->registerVariable<double>(
-      "geometry/track_width", &runtime_params_shadow_.geometry.track_width, "Track width in meters.", 0.0,
-      5.0);
-  parameter_loader->registerVariable<double>(
-      "geometry/wheel_radius", &runtime_params_shadow_.geometry.wheel_radius, "Wheel radius in meters.",
-      MIN_WHEEL_RADIUS, 1.0);
+
+  RegisterStringRuntimeParams(
+      parameter_loader,
+      {{"command_frame_id", &runtime_params_shadow_.command_frame_id,
+        "Velocity command frame id."},
+       {"odom_frame_id", &runtime_params_shadow_.odom_frame_id,
+        "Odometry frame id."},
+       {"base_frame_id", &runtime_params_shadow_.base_frame_id,
+        "Base frame id."}});
+
+  RegisterBoolRuntimeParams(
+      parameter_loader,
+      {{"odom_integrate_on_timeout",
+        &runtime_params_shadow_.odom_integrate_on_timeout,
+        "Integrate odom when cmd_vel times out."},
+       {"publish_tf", &runtime_params_shadow_.publish_tf,
+        "Publish odom to base_link transform."},
+       {"enable_acceleration_limits",
+        &runtime_params_shadow_.enable_acceleration_limits,
+        "Enable chassis acceleration limits."},
+       {"enable_power_limit", &runtime_params_shadow_.enable_power_limit,
+        "Enable wheel power limiting."},
+       {"enable_power_limit_logging",
+        &runtime_params_shadow_.enable_power_limit_logging,
+        "Enable power limiting status logging."}});
+
+  RegisterDoubleRuntimeParams(
+      parameter_loader,
+      {{"cmd_vel_timeout", &runtime_params_shadow_.cmd_vel_timeout,
+        "cmd_vel timeout in seconds.", 0.0, 10.0},
+       {"odom_startup_hold_sec", &runtime_params_shadow_.odom_startup_hold_sec,
+        "Startup hold window for odom integration.", 0.0, 20.0},
+       {"odom_max_linear_speed", &runtime_params_shadow_.odom_max_linear_speed,
+        "Maximum acceptable odom linear speed.", MIN_VALID_DT, 50.0},
+       {"odom_max_angular_speed", &runtime_params_shadow_.odom_max_angular_speed,
+        "Maximum acceptable odom angular speed.", MIN_VALID_DT, 100.0},
+       {"wheel_effort_limit", &runtime_params_shadow_.wheel_effort_limit,
+        "Absolute wheel effort limit.", MIN_VALID_DT, 100.0},
+       {"reverse_ccw_vx_scale", &runtime_params_shadow_.reverse_ccw_vx_scale,
+        "Reverse-CCW compensation vx scale.", MIN_REVERSE_CCW_VX_SCALE,
+        MAX_REVERSE_CCW_VX_SCALE},
+       {"reverse_ccw_wz_gain", &runtime_params_shadow_.reverse_ccw_wz_gain,
+        "Reverse-CCW compensation wz gain.", MIN_REVERSE_CCW_WZ_GAIN,
+        MAX_REVERSE_CCW_WZ_GAIN},
+       {"reverse_ccw_vy_threshold",
+        &runtime_params_shadow_.reverse_ccw_vy_threshold,
+        "Reverse-CCW compensation |vy| trigger threshold.",
+        MIN_REVERSE_CCW_VY_THRESHOLD, MAX_REVERSE_CCW_VY_THRESHOLD},
+       {"reverse_ccw_steer_priority_error",
+        &runtime_params_shadow_.reverse_ccw_steer_priority_error,
+        "Reverse-CCW steering-priority error threshold.",
+        MIN_REVERSE_CCW_STEER_PRIORITY_ERROR,
+        MAX_REVERSE_CCW_STEER_PRIORITY_ERROR},
+       {"max_linear_acceleration",
+        &runtime_params_shadow_.max_linear_acceleration,
+        "Maximum chassis linear acceleration in m/s^2.",
+        MIN_ACCELERATION_LIMIT, 100.0},
+       {"max_angular_acceleration",
+        &runtime_params_shadow_.max_angular_acceleration,
+        "Maximum chassis angular acceleration in rad/s^2.",
+        MIN_ACCELERATION_LIMIT, 200.0},
+       {"max_power", &runtime_params_shadow_.max_power,
+        "Maximum allowed wheel power in watts.", MIN_POWER_LIMIT, 2000.0},
+       {"power_loss_k1", &runtime_params_shadow_.power_loss_k1,
+        "Quadratic torque loss coefficient for power model.", 0.0, 1.0},
+       {"power_loss_k2", &runtime_params_shadow_.power_loss_k2,
+        "Quadratic speed loss coefficient for power model.", 0.0, 1.0},
+       {"min_power_scale", &runtime_params_shadow_.min_power_scale,
+        "Lower bound for power limiting scale factor.", MIN_POWER_SCALE,
+        MAX_POWER_SCALE},
+       {"geometry/wheel_base", &runtime_params_shadow_.geometry.wheel_base,
+        "Wheel base in meters.", 0.0, 5.0},
+       {"geometry/track_width", &runtime_params_shadow_.geometry.track_width,
+        "Track width in meters.", 0.0, 5.0},
+       {"geometry/wheel_radius", &runtime_params_shadow_.geometry.wheel_radius,
+        "Wheel radius in meters.", MIN_WHEEL_RADIUS, 1.0}});
 }
 
 bool SentryChassisController::InitJointHandles(
