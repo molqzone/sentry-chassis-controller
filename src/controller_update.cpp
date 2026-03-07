@@ -130,6 +130,117 @@ void StorePowerLimitWarningSnapshot(
                      std::memory_order_relaxed);
 }
 
+struct WheelMotionState
+{
+  std::array<double, SentryChassisController::WHEEL_COUNT> steer_positions{};
+  std::array<double, SentryChassisController::WHEEL_COUNT> wheel_velocities{};
+};
+
+struct WheelEffortState
+{
+  std::array<double, SentryChassisController::WHEEL_COUNT> signed_wheel_velocities{};
+  std::array<double, SentryChassisController::WHEEL_COUNT> signed_wheel_efforts{};
+};
+
+std::array<double, SentryChassisController::WHEEL_COUNT> BuildWheelDispatchCommands(
+    const std::array<int, SentryChassisController::WHEEL_COUNT>& wheel_rolling_signs,
+    const std::array<double, SentryChassisController::WHEEL_COUNT>& signed_wheel_efforts,
+    const std::array<bool, SentryChassisController::WHEEL_COUNT>& wheel_pid_reset_flags);
+
+WheelMotionState ReadWheelMotionState(
+    const std::array<hardware_interface::JointHandle,
+                     SentryChassisController::WHEEL_COUNT>& steer_joints,
+    const std::array<hardware_interface::JointHandle,
+                     SentryChassisController::WHEEL_COUNT>& wheel_joints)
+{
+  WheelMotionState state;
+  for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
+  {
+    state.steer_positions[i] = steer_joints[i].getPosition();
+    state.wheel_velocities[i] = wheel_joints[i].getVelocity();
+  }
+  return state;
+}
+
+void ApplySteerJointCommands(
+    const WheelTargetPlan& target_plan, const ros::Duration& period,
+    std::array<control_toolbox::Pid, SentryChassisController::WHEEL_COUNT>* steer_pids,
+    std::array<hardware_interface::JointHandle,
+               SentryChassisController::WHEEL_COUNT>* steer_joints)
+{
+  if (steer_pids == nullptr || steer_joints == nullptr)
+  {
+    return;
+  }
+
+  for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
+  {
+    const double steer_effort =
+        steer_pids->at(i).computeCommand(target_plan.steer_errors[i], period);
+    steer_joints->at(i).setCommand(steer_effort);
+  }
+}
+
+double ClampWheelEffort(double limit, double effort)
+{
+  return std::max(-limit, std::min(limit, effort));
+}
+
+WheelEffortState ComputeWheelEffortState(
+    const WheelTargetPlan& target_plan, const WheelMotionState& motion_state,
+    const ros::Duration& period, double wheel_effort_limit,
+    const std::array<int, SentryChassisController::WHEEL_COUNT>& wheel_rolling_signs,
+    std::array<control_toolbox::Pid, SentryChassisController::WHEEL_COUNT>* wheel_pids)
+{
+  WheelEffortState state;
+  if (wheel_pids == nullptr)
+  {
+    return state;
+  }
+
+  for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
+  {
+    if (target_plan.wheel_pid_reset_flags[i])
+    {
+      wheel_pids->at(i).reset();
+      continue;
+    }
+
+    const double rolling_sign = static_cast<double>(wheel_rolling_signs[i]);
+    const double signed_wheel_velocity = rolling_sign * motion_state.wheel_velocities[i];
+    const double wheel_target = target_plan.wheel_targets[i] * target_plan.alignments[i];
+    const double wheel_error = wheel_target - signed_wheel_velocity;
+    const double signed_wheel_effort =
+        wheel_pids->at(i).computeCommand(wheel_error, period);
+    state.signed_wheel_velocities[i] = signed_wheel_velocity;
+    state.signed_wheel_efforts[i] =
+        ClampWheelEffort(wheel_effort_limit, signed_wheel_effort);
+  }
+  return state;
+}
+
+void ApplyWheelDispatchCommands(
+    const std::array<int, SentryChassisController::WHEEL_COUNT>& wheel_rolling_signs,
+    const WheelEffortState& effort_state,
+    const std::array<bool, SentryChassisController::WHEEL_COUNT>& wheel_pid_reset_flags,
+    std::array<hardware_interface::JointHandle,
+               SentryChassisController::WHEEL_COUNT>* wheel_joints)
+{
+  if (wheel_joints == nullptr)
+  {
+    return;
+  }
+
+  const std::array<double, SentryChassisController::WHEEL_COUNT> wheel_commands =
+      BuildWheelDispatchCommands(wheel_rolling_signs,
+                                 effort_state.signed_wheel_efforts,
+                                 wheel_pid_reset_flags);
+  for (std::size_t i = 0; i < SentryChassisController::WHEEL_COUNT; ++i)
+  {
+    wheel_joints->at(i).setCommand(wheel_commands[i]);
+  }
+}
+
 constexpr int64_t DEFERRED_RT_WARN_FLUSH_INTERVAL_NS = 1000000000LL;
 
 bool ShouldEnableSteerPriorityMode(
@@ -1263,62 +1374,32 @@ void SentryChassisController::ComputeAndApplyWheelControl(
     const Kinematics::ChassisTwist& limited_command_twist_base,
     const ros::Duration& period, const RuntimeParams& runtime_params)
 {
-  std::array<double, WHEEL_COUNT> steer_positions{};
-  std::array<double, WHEEL_COUNT> wheel_velocities{};
-  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
-  {
-    steer_positions[i] = steer_joints_[i].getPosition();
-    wheel_velocities[i] = wheel_joints_[i].getVelocity();
-  }
+  const WheelMotionState motion_state =
+      ReadWheelMotionState(steer_joints_, wheel_joints_);
 
   // Stage 1: constraint/compensation on chassis command (pure).
-  const WheelCommandContext COMMAND_CONTEXT = ApplyWheelCommandConstraintsAndCompensation(
+  const WheelCommandContext command_context = ApplyWheelCommandConstraintsAndCompensation(
       limited_command_twist_base, command_compensation_matrix_,
       runtime_params.reverse_ccw_vy_threshold, runtime_params.reverse_ccw_vx_scale,
       runtime_params.reverse_ccw_wz_gain);
   // Stage 2: per-wheel target solving (pure).
-  const WheelTargetPlan TARGET_PLAN =
-      SolveWheelTargets(COMMAND_CONTEXT, kinematics_, steer_zero_offsets_, steer_positions,
+  const WheelTargetPlan target_plan =
+      SolveWheelTargets(command_context, kinematics_, steer_zero_offsets_,
+                        motion_state.steer_positions,
                         runtime_params.reverse_ccw_steer_priority_error);
 
   // Stage 3 preparation: run stateful PID loops against solved targets.
-  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
-  {
-    const double STEER_EFFORT =
-        steer_pids_[i].computeCommand(TARGET_PLAN.steer_errors[i], period);
-    steer_joints_[i].setCommand(STEER_EFFORT);
-  }
+  ApplySteerJointCommands(target_plan, period, &steer_pids_, &steer_joints_);
 
-  std::array<double, WHEEL_COUNT> signed_wheel_velocities{};
-  std::array<double, WHEEL_COUNT> signed_wheel_efforts{};
-  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
-  {
-    if (TARGET_PLAN.wheel_pid_reset_flags[i])
-    {
-      wheel_pids_[i].reset();
-      signed_wheel_velocities[i] = 0.0;
-      signed_wheel_efforts[i] = 0.0;
-      continue;
-    }
-    const double ROLLING_SIGN = static_cast<double>(wheel_rolling_signs_[i]);
-    const double SIGNED_WHEEL_VELOCITY = ROLLING_SIGN * wheel_velocities[i];
-    const double WHEEL_TARGET = TARGET_PLAN.wheel_targets[i] * TARGET_PLAN.alignments[i];
-    const double WHEEL_ERROR = WHEEL_TARGET - SIGNED_WHEEL_VELOCITY;
-    const double SIGNED_WHEEL_EFFORT = wheel_pids_[i].computeCommand(WHEEL_ERROR, period);
-    signed_wheel_velocities[i] = SIGNED_WHEEL_VELOCITY;
-    signed_wheel_efforts[i] =
-        std::max(-runtime_params.wheel_effort_limit,
-                 std::min(runtime_params.wheel_effort_limit, SIGNED_WHEEL_EFFORT));
-  }
-  ApplyPowerLimiting(runtime_params, signed_wheel_velocities, &signed_wheel_efforts);
+  WheelEffortState effort_state = ComputeWheelEffortState(
+      target_plan, motion_state, period, runtime_params.wheel_effort_limit,
+      wheel_rolling_signs_, &wheel_pids_);
+  ApplyPowerLimiting(runtime_params, effort_state.signed_wheel_velocities,
+                     &effort_state.signed_wheel_efforts);
 
   // Stage 3: build per-wheel dispatch commands (pure), then apply to hardware.
-  const std::array<double, WHEEL_COUNT> WHEEL_COMMANDS = BuildWheelDispatchCommands(
-      wheel_rolling_signs_, signed_wheel_efforts, TARGET_PLAN.wheel_pid_reset_flags);
-  for (std::size_t i = 0; i < WHEEL_COUNT; ++i)
-  {
-    wheel_joints_[i].setCommand(WHEEL_COMMANDS[i]);
-  }
+  ApplyWheelDispatchCommands(wheel_rolling_signs_, effort_state,
+                             target_plan.wheel_pid_reset_flags, &wheel_joints_);
 }
 
 Kinematics::ChassisTwist SentryChassisController::ComputeAndIntegrateOdometry(
