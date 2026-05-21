@@ -1,27 +1,50 @@
 # sentry_chassis_controller
 
-当前包只保留一个控制器插件：`sentry_chassis_controller/SentryChassisController`。
+Sentry chassis controller package for ROS1 Noetic and Gazebo.
 
-实现边界已经收成两层：
+## Overview
 
-- 上游依赖：`rm_chassis_controllers::ChassisBase`
-- 业务实现：`SentryChassisController`
+This package keeps a single controller plugin:
 
-不再保留旧版 `kinematics`、runtime-param、PID 调参脚本和对应测试。
+- `sentry_chassis_controller/SentryChassisController`
 
-## 关键文件
+It is built on top of `rm_chassis_controllers::ChassisBase` and keeps only the Sentry-specific controller logic.
 
-- 控制器头文件：`include/sentry_chassis_controller/sentry_chassis_controller.h`
-- 控制器实现：`src/sentry_chassis_controller.cpp`
-- 插件导出：`sentry_chassis_controller_plugins.xml`
-- 默认参数：`config/chassis_controller.yaml`
-- 启动文件：`launch/sentry_chassis_controller.launch`、`launch/sentry_sim.launch`
+The old `kinematics`, runtime parameter tuning, and PID tuning scripts are no longer part of the package.
 
-## 参数结构
+## Installation
 
-控制器命名空间：`/sentry_chassis_controller`
+Build the package in a catkin workspace:
 
-基础参数由 `ChassisBase` 提供，当前实际使用的主要是：
+```bash
+source /opt/ros/noetic/setup.bash
+catkin build sentry_chassis_controller
+```
+
+## Dependencies
+
+### Third-party base
+
+- `rm_chassis_controllers::ChassisBase`
+
+### Catkin dependencies
+
+- `roscpp`
+- `controller_interface`
+- `hardware_interface`
+- `pluginlib`
+- `rm_chassis_controllers`
+- `effort_controllers`
+- `angles`
+- `eigen`
+
+## Configuration
+
+The controller namespace is `/sentry_chassis_controller`.
+
+### Base parameters
+
+Provided by `ChassisBase`:
 
 - `publish_rate`
 - `enable_odom_tf`
@@ -33,13 +56,17 @@
 - `power`
 - `pid_follow`
 
-任务控制器自身参数只有三组：
+### Package parameters
+
+Custom Sentry parameters:
 
 - `wheel_rolling_signs`
-- `wheel_direction_signs/vx|vy|wz`
+- `wheel_direction_signs/vx`
+- `wheel_direction_signs/vy`
+- `wheel_direction_signs/wz`
 - `modules`
 
-`modules` 下每个模块都需要：
+Each module requires:
 
 - `position`
 - `pivot/joint`
@@ -49,58 +76,48 @@
 - `wheel/radius`
 - `wheel/pid`
 
-已经移除的旧参数：
+Removed parameters:
 
 - `steer_zero_offsets`
 - `command_compensation_matrix`
 - `enable_dynamic_reconfigure`
 
-## 运行
+## Usage
 
-仅控制器链路：
+Controller-only launch:
 
 ```bash
 roslaunch sentry_chassis_controller sentry_chassis_controller.launch
 ```
 
-Gazebo 一体链路：
+Gazebo launch:
 
 ```bash
 roslaunch sentry_chassis_controller sentry_sim.launch
 ```
 
-关闭 GUI 和 Foxglove：
+Headless Gazebo:
 
 ```bash
 roslaunch sentry_chassis_controller sentry_sim.launch gui:=false with_foxglove:=false
 ```
 
-## 常用脚本
-
-键盘控制：
+Teleop:
 
 ```bash
 rosrun sentry_chassis_controller teleop_keyboard.sh
 ```
 
-行为评估：
+## Scripts
 
-```bash
-rosrun sentry_chassis_controller evaluate_teleop_behavior.py
-rosrun sentry_chassis_controller evaluate_teleop_keys.py
-```
+- `evaluate_teleop_behavior.py`
+- `evaluate_teleop_keys.py`
+- `auto_calibrate_signs.py`
+- `auto_calibrate_sign_chain.py`
+- `publish_default_chassis_cmd.py`
 
-符号自动校准：
+Container wrappers:
 
-```bash
-rosrun sentry_chassis_controller auto_calibrate_signs.py
-rosrun sentry_chassis_controller auto_calibrate_sign_chain.py
-```
-
-容器内 headless 回归入口：
-
-```bash
-./scripts/_run_teleop_eval_inside.sh
-./scripts/_run_auto_calibrate_inside.sh
-./scripts/_run_auto_calibrate_sign_chain_inside.sh
-```
+- `./scripts/_run_teleop_eval_inside.sh`
+- `./scripts/_run_auto_calibrate_inside.sh`
+- `./scripts/_run_auto_calibrate_sign_chain_inside.sh`
