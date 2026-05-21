@@ -12,38 +12,20 @@
 
   <build_depend>roscpp</build_depend>
   <build_depend>controller_interface</build_depend>
-  <build_depend>controller_manager</build_depend>
   <build_depend>hardware_interface</build_depend>
   <build_depend>pluginlib</build_depend>
-  <build_depend>control_toolbox</build_depend>
-  <build_depend>dynamic_reconfigure</build_depend>
-  <build_depend>ddynamic_reconfigure</build_depend>
-  <build_depend>realtime_tools</build_depend>
-  <build_depend>geometry_msgs</build_depend>
-  <build_depend>nav_msgs</build_depend>
-  <build_depend>tf</build_depend>
-  <build_depend>tf2</build_depend>
-  <build_depend>tf2_ros</build_depend>
-  <build_depend>tf2_geometry_msgs</build_depend>
-  <build_depend>sophus</build_depend>
+  <build_depend>rm_chassis_controllers</build_depend>
+  <build_depend>effort_controllers</build_depend>
+  <build_depend>angles</build_depend>
   <build_depend>eigen</build_depend>
 
   <build_export_depend>roscpp</build_export_depend>
   <build_export_depend>controller_interface</build_export_depend>
-  <build_export_depend>controller_manager</build_export_depend>
   <build_export_depend>hardware_interface</build_export_depend>
   <build_export_depend>pluginlib</build_export_depend>
-  <build_export_depend>control_toolbox</build_export_depend>
-  <build_export_depend>dynamic_reconfigure</build_export_depend>
-  <build_export_depend>ddynamic_reconfigure</build_export_depend>
-  <build_export_depend>realtime_tools</build_export_depend>
-  <build_export_depend>geometry_msgs</build_export_depend>
-  <build_export_depend>nav_msgs</build_export_depend>
-  <build_export_depend>tf</build_export_depend>
-  <build_export_depend>tf2</build_export_depend>
-  <build_export_depend>tf2_ros</build_export_depend>
-  <build_export_depend>tf2_geometry_msgs</build_export_depend>
-  <build_export_depend>sophus</build_export_depend>
+  <build_export_depend>rm_chassis_controllers</build_export_depend>
+  <build_export_depend>effort_controllers</build_export_depend>
+  <build_export_depend>angles</build_export_depend>
   <build_export_depend>eigen</build_export_depend>
 
   <exec_depend>roscpp</exec_depend>
@@ -51,17 +33,11 @@
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>hardware_interface</exec_depend>
   <exec_depend>pluginlib</exec_depend>
-  <exec_depend>control_toolbox</exec_depend>
-  <exec_depend>dynamic_reconfigure</exec_depend>
-  <exec_depend>ddynamic_reconfigure</exec_depend>
-  <exec_depend>realtime_tools</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>tf</exec_depend>
-  <exec_depend>tf2</exec_depend>
-  <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>tf2_geometry_msgs</exec_depend>
-  <exec_depend>sophus</exec_depend>
+  <exec_depend>rm_chassis_controllers</exec_depend>
+  <exec_depend>rm_msgs</exec_depend>
+  <exec_depend>effort_controllers</exec_depend>
+  <exec_depend>angles</exec_depend>
+  <exec_depend>rospy</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>rm_description</exec_depend>
@@ -69,9 +45,6 @@
   <exec_depend>rosbridge_server</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>teleop_twist_keyboard</exec_depend>
-
-  <test_depend>rostest</test_depend>
-  <test_depend>gtest</test_depend>
 
   <export>
     <controller_interface plugin="${prefix}/sentry_chassis_controller_plugins.xml"/>

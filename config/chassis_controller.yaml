@@ -1,121 +1,85 @@
 sentry_chassis_controller:
   type: sentry_chassis_controller/SentryChassisController
-  cmd_vel_topic: /cmd_vel
-  command_velocity_mode: base_link
-  command_frame_id: base_link
-  cmd_vel_timeout: 0.25
-  enable_dynamic_reconfigure: true
-  odom_topic: /odom
-  odom_frame_id: odom
-  base_frame_id: base_link
-  odom_startup_hold_sec: 1.0
-  odom_max_linear_speed: 8.0
-  odom_max_angular_speed: 16.0
-  odom_integrate_on_timeout: false
-  publish_tf: true
-  wheel_effort_limit: 12.0
-  command_compensation_matrix: [1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, -0.200000, 0.000000, 2.000000]
-  reverse_ccw_vx_scale: 1.00
-  reverse_ccw_wz_gain: 1.00
-  reverse_ccw_vy_threshold: 0.03
-  reverse_ccw_steer_priority_error: 0.60
-  enable_acceleration_limits: false
-  max_linear_acceleration: 3.0
-  max_angular_acceleration: 5.0
-  enable_power_limit: false
-  enable_power_limit_logging: false
-  max_power: 360.0
-  power_loss_k1: 0.001
-  power_loss_k2: 0.0001
-  min_power_scale: 0.3
-  steer_joints:
-  - left_front_pivot_joint
-  - right_front_pivot_joint
-  - left_back_pivot_joint
-  - right_back_pivot_joint
-  wheel_joints:
-  - left_front_wheel_joint
-  - right_front_wheel_joint
-  - left_back_wheel_joint
-  - right_back_wheel_joint
+
+  # rm_chassis_controllers / ChassisBase
+  publish_rate: 100.0
+  enable_odom_tf: true
+  publish_odom_tf: true
+  timeout: 0.25
+  wheel_radius: 0.055
+  max_odom_vel: 8.0
+  twist_covariance_diagonal: [0.001, 0.001, 0.001, 0.001, 0.001, 0.001]
+  power:
+    effort_coeff: 12.0
+    vel_coeff: 0.0048
+    power_offset: 0.0
+  pid_follow:
+    p: 5.0
+    i: 0.0
+    d: 0.3
+    i_max: 0.0
+    i_min: 0.0
+    antiwindup: true
+    publish_state: true
+
   wheel_rolling_signs: [1, 1, 1, 1]
   wheel_direction_signs:
     vx: [1, 1, 1, 1]
     vy: [1, 1, 1, 1]
     wz: [1, 1, 1, 1]
-  geometry:
-    wheel_base: 0.362
-    track_width: 0.362
-    wheel_radius: 0.055
-  steer_zero_offsets:
-  - 0.000000000
-  - -0.020000000
-  - 0.000000000
-  - 0.000000000
-  pid:
-    steer:
-      front_left:
-        p: 12.0
-        i: 0.160729173929626
-        d: 0.12
-        i_clamp_min: -0.4
-        i_clamp_max: 0.4
-        antiwindup: true
-        publish_state: true
-      front_right:
-        p: 12.0
-        i: 0.160729173929626
-        d: 0.12
-        i_clamp_min: -0.4
-        i_clamp_max: 0.4
-        antiwindup: true
-        publish_state: true
-      rear_left:
-        p: 12.0
-        i: 0.160729173929626
-        d: 0.12
-        i_clamp_min: -0.4
-        i_clamp_max: 0.4
-        antiwindup: true
-        publish_state: true
-      rear_right:
-        p: 12.0
-        i: 0.160729173929626
-        d: 0.12
-        i_clamp_min: -0.4
-        i_clamp_max: 0.4
-        antiwindup: true
-        publish_state: true
-    wheel:
-      front_left:
-        p: 0.3
-        i: 0.9
-        d: 0.01
-        i_clamp_min: -2.0
-        i_clamp_max: 2.0
-        antiwindup: true
-        publish_state: true
-      front_right:
-        p: 0.3
-        i: 0.9
-        d: 0.01
-        i_clamp_min: -2.0
-        i_clamp_max: 2.0
-        antiwindup: true
-        publish_state: true
-      rear_left:
-        p: 0.3
-        i: 0.9
-        d: 0.01
-        i_clamp_min: -2.0
-        i_clamp_max: 2.0
-        antiwindup: true
-        publish_state: true
-      rear_right:
-        p: 0.3
-        i: 0.9
-        d: 0.01
-        i_clamp_min: -2.0
-        i_clamp_max: 2.0
-        antiwindup: true
-        publish_state: true
+
+  modules:
+    left_front:
+      position: [0.181, 0.181]
+      pivot:
+        joint: left_front_pivot_joint
+        offset: 0.000000000
+        pid: &pivot_pid
+          p: 12.0
+          i: 0.160729173929626
+          d: 0.12
+          i_clamp_min: -0.4
+          i_clamp_max: 0.4
+          antiwindup: true
+          publish_state: true
+      wheel:
+        joint: left_front_wheel_joint
+        radius: 0.055
+        pid: &wheel_pid
+          p: 0.4
+          i: 0.0
+          d: 0.0
+          i_clamp_min: 0.0
+          i_clamp_max: 0.0
+          antiwindup: true
+          publish_state: true
+    right_front:
+      position: [0.181, -0.181]
+      pivot:
+        joint: right_front_pivot_joint
+        offset: -0.020000000
+        pid: *pivot_pid
+      wheel:
+        joint: right_front_wheel_joint
+        radius: 0.055
+        pid: *wheel_pid
+    left_back:
+      position: [-0.181, 0.181]
+      pivot:
+        joint: left_back_pivot_joint
+        offset: 0.000000000
+        pid: *pivot_pid
+      wheel:
+        joint: left_back_wheel_joint
+        radius: 0.055
+        pid: *wheel_pid
+    right_back:
+      position: [-0.181, -0.181]
+      pivot:
+        joint: right_back_pivot_joint
+        offset: 0.000000000
+        pid: *pivot_pid
+      wheel:
+        joint: right_back_wheel_joint
+        radius: 0.055
+        pid: *wheel_pid

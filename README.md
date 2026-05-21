@@ -1,201 +1,106 @@
-# sentry_chassis_controller (ROS package)
+# sentry_chassis_controller
 
-本包已按 `rm_template` 的结构组织，并保留哨兵底盘控制器特有的 plugin 控制器入口。
+当前包只保留一个控制器插件：`sentry_chassis_controller/SentryChassisController`。
 
-## 模板对齐内容
+实现边界已经收成两层：
 
-- 目录结构：`include/`、`src/`、`config/`、`launch/`、`test/`、`doc/`。
-- 构建结构：核心算法库（`kinematics`）+ plugin 控制器（`SentryChassisController`）+ gtest。
-- 参数加载：统一通过 `config/chassis_controller.yaml` 由 plugin 链路读取。
+- 上游依赖：`rm_chassis_controllers::ChassisBase`
+- 业务实现：`SentryChassisController`
 
-## 运行链路
+不再保留旧版 `kinematics`、runtime-param、PID 调参脚本和对应测试。
 
-- 仅控制器链路（不含 Gazebo）：`roslaunch sentry_chassis_controller sentry_chassis_controller.launch`
-- 仿真一体链路（Gazebo + 模型 + 控制器 + Foxglove bridge）：
-  `roslaunch sentry_chassis_controller sentry_sim.launch`
-  - 模型由本包 overlay xacro 生成：`urdf/sentry_overlay.urdf.xacro`（不修改第三方源码）
-  - 默认后端：`foxglove_bridge`，Foxglove 连接地址：`ws://localhost:8765`
-  - 可切换回 rosbridge：`roslaunch sentry_chassis_controller sentry_sim.launch foxglove_backend:=rosbridge`
-    - rosbridge 连接地址：`ws://localhost:9090`
-    - rosbridge 模式默认启动 mesh 静态资源服务：`http://localhost:8766`
-  - 如需关闭 Foxglove bridge：`roslaunch sentry_chassis_controller sentry_sim.launch with_foxglove:=false`
-  - 如需关闭 rosbridge 模式的 mesh 资源服务：`roslaunch sentry_chassis_controller sentry_sim.launch with_foxglove_mesh_server:=false`
+## 关键文件
 
-## 项目特有内容
+- 控制器头文件：`include/sentry_chassis_controller/sentry_chassis_controller.h`
+- 控制器实现：`src/sentry_chassis_controller.cpp`
+- 插件导出：`sentry_chassis_controller_plugins.xml`
+- 默认参数：`config/chassis_controller.yaml`
+- 启动文件：`launch/sentry_chassis_controller.launch`、`launch/sentry_sim.launch`
 
-- `SentryChassisController` pluginlib 控制器（8 路 PID 闭环）：
-  - `include/sentry_chassis_controller/sentry_chassis_controller.h`
-  - `src/sentry_chassis_controller.cpp`
-  - `sentry_chassis_controller_plugins.xml`
-- 控制器参数模板：`config/chassis_controller.yaml`（4 路舵向 + 4 路驱动独立 PID）
-
-## PID 参数结构
+## 参数结构
 
 控制器命名空间：`/sentry_chassis_controller`
 
-- `cmd_vel_topic`：速度指令话题，默认 `/cmd_vel`
-- `command_velocity_mode`：速度指令解析模式
-  - `base_link`：按底盘坐标系模式执行（需求 5）
-  - `global`：按全局坐标系模式执行，需通过 TF 转到底盘坐标系（需求 7）
-- `command_frame_id`：速度指令原始坐标系
-  - `base_link` 模式下必须与 `base_frame_id` 一致
-  - `global` 模式下通常配置为 `odom` 或 `map`
-- `cmd_vel_timeout`：指令超时秒数，超时自动置零，默认 `0.25`
-- `enable_dynamic_reconfigure`：是否启用 `rqt_reconfigure` 在线调参（默认 `true`）
-- `odom_topic`：里程计输出话题，默认 `/odom`
-- `odom_frame_id`：里程计父坐标系，默认 `odom`
-- `base_frame_id`：里程计子坐标系，默认 `base_link`
-- `odom_startup_hold_sec`：启动稳定窗口（秒），仅在 `odom_integrate_on_timeout=true` 时生效，默认 `1.0`
-- `odom_max_linear_speed`：里程计线速度保护上限（m/s），超过则丢弃该周期解算，默认 `8.0`
-- `odom_max_angular_speed`：里程计角速度保护上限（rad/s），超过则丢弃该周期解算，默认 `16.0`
-- `odom_integrate_on_timeout`：指令超时后是否继续积分里程计，默认 `false`（避免启动/空闲漂移）
-- `publish_tf`：是否发布 `odom -> base_link` TF，默认 `true`
-- `wheel_effort_limit`：轮速 PID 输出绝对值限幅，默认 `12.0`
-- `enable_acceleration_limits`：是否启用底盘加速度限制，默认 `false`
-- `max_linear_acceleration`：底盘平面线加速度上限（m/s^2），默认 `3.0`
-- `max_angular_acceleration`：底盘角加速度上限（rad/s^2），默认 `5.0`
-- `enable_power_limit`：是否启用轮端功率限制，默认 `false`
-- `enable_power_limit_logging`：是否输出功率限制日志，默认 `false`
-- `max_power`：轮端功率模型上限（W），默认 `360.0`
-- `power_loss_k1`：功率模型中 `effort^2` 损耗项系数，默认 `0.001`
-- `power_loss_k2`：功率模型中 `velocity^2` 损耗项系数，默认 `0.0001`
-- `min_power_scale`：功率限制缩放下界，默认 `0.3`
-- `command_compensation_matrix`：3x3 行优先线性补偿矩阵（`[vx, vy, wz] -> [vx', vy', wz']`），默认单位阵
-- 控制器逆解层不再包含离散特判补偿（如 pure strafe/reverse/opposite-sign 分支）；行为修正统一通过 `command_compensation_matrix` 与底层 PID/机械参数完成
-- `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
-- `steer_zero_offsets`：四个舵向零位目标（rad）
-- `wheel_rolling_signs`：四个轮子的滚动方向符号，轮序固定 `front_left, front_right, rear_left, rear_right`，每项只能为 `-1` 或 `1`
-- `wheel_direction_signs/vx`、`wheel_direction_signs/vy`、`wheel_direction_signs/wz`：
-  轮向符号矩阵，轮序固定 `front_left, front_right, rear_left, rear_right`，每项只能为 `-1` 或 `1`
-- 八路 PID（每路独立）：
-  - `pid/steer/front_left/*`
-  - `pid/steer/front_right/*`
-  - `pid/steer/rear_left/*`
-  - `pid/steer/rear_right/*`
-  - `pid/wheel/front_left/*`
-  - `pid/wheel/front_right/*`
-  - `pid/wheel/rear_left/*`
-  - `pid/wheel/rear_right/*`
+基础参数由 `ChassisBase` 提供，当前实际使用的主要是：
 
-每路 PID 统一字段：
-- `p`、`i`、`d`
-- `i_clamp_min`、`i_clamp_max`
-- `antiwindup`
-- `publish_state`
+- `publish_rate`
+- `enable_odom_tf`
+- `publish_odom_tf`
+- `timeout`
+- `wheel_radius`
+- `max_odom_vel`
+- `twist_covariance_diagonal`
+- `power`
+- `pid_follow`
 
-## 需求 5 对齐说明（逆运动学）
+任务控制器自身参数只有三组：
 
-1. `/cmd_vel` 的 `geometry_msgs/Twist` 按 `base_link` 解释：
-   - `linear.x`：前进方向为正
-   - `linear.y`：左向为正
-   - `angular.z`：绕 z 轴逆时针为正
-2. 轮序固定为：`front_left`、`front_right`、`rear_left`、`rear_right`。
-3. 控制器先按模块几何位置和 `wheel_direction_signs` 把底盘速度投影到每个舵轮模块的平面速度。
-4. 每个模块再解算：
-   - `target_steer = atan2(module_vy, module_vx) + steer_zero_offset`
-   - `target_wheel = hypot(module_vx, module_vy) / wheel_radius`
-   - 当舵角误差超过 `±90deg` 时，自动翻转轮速方向并折返舵角，保证最短转向路径。
-5. 几何参数 `geometry/wheel_base`、`geometry/track_width`、`geometry/wheel_radius`
-   可直接在 `config/chassis_controller.yaml` 中配置并实时影响舵角误差与轮目标解算。
+- `wheel_rolling_signs`
+- `wheel_direction_signs/vx|vy|wz`
+- `modules`
 
-## 轮向符号矩阵（wheel_direction_signs）
+`modules` 下每个模块都需要：
 
-用于对齐仿真模型中每个轮子的实际正方向，避免“公式符号正确但关节方向相反”导致的验收误判。
+- `position`
+- `pivot/joint`
+- `pivot/offset`
+- `pivot/pid`
+- `wheel/joint`
+- `wheel/radius`
+- `wheel/pid`
 
-- 默认行为：三个轴参数都缺失时，按全 `1` 处理，不改变原始逆解公式。
-- 配置规则：只要配置了任意一个轴，`vx/vy/wz` 三组必须同时存在且每组长度为 4。
-- 当前模型推荐值：
-  - `vx: [1, -1, -1, -1]`
-  - `vy: [-1, -1, -1, 1]`
-  - `wz: [1, 1, 1, -1]`
-- 调参方法：保持轮序不变，针对单轴输入（仅 `vx`、仅 `vy`、仅 `wz`）逐项调整到符号一致。
+已经移除的旧参数：
 
-## 需求 6 对齐说明（正运动学里程计）
+- `steer_zero_offsets`
+- `command_compensation_matrix`
+- `enable_dynamic_reconfigure`
 
-1. 在 plugin `update()` 中使用“实际舵角 + 实际轮速”解算底盘实时速度：
-   - 舵角：`steer_position - steer_zero_offsets`
-   - 轮速：`wheel_rolling_signs * wheel_radius * wheel_angular_velocity`
-2. 使用四轮约束的最小二乘正运动学求解 `vx/vy/wz`，当矩阵退化时跳过当周期积分并节流告警。
-3. 里程计采用中点法积分：
-   - `yaw_mid = yaw + 0.5 * wz * dt`
-   - `dx = (vx*cos(yaw_mid) - vy*sin(yaw_mid)) * dt`
-   - `dy = (vx*sin(yaw_mid) + vy*cos(yaw_mid)) * dt`
-4. 发布 `nav_msgs/Odometry` 到 `/odom`（可配置），并按 `publish_tf` 发布 `odom -> base_link` TF。
-5. 默认在 `cmd_vel` 超时后冻结里程计积分（`odom_integrate_on_timeout=false`），用于抑制无指令阶段的仿真抖动漂移。
+## 运行
 
-## 需求 7 对齐说明（tf 世界坐标速度控制）
+仅控制器链路：
 
-1. 在 `command_velocity_mode: global` 时，`/cmd_vel` 被视为 `command_frame_id`（`odom`/`map`）下速度。
-2. 控制器在 `update()` 周期内通过 TF 查询 `command_frame_id -> base_frame_id` 变换，
-   将 `vx/vy/wz` 转为底盘坐标系速度后再执行逆运动学与 PID 闭环。
-3. 在 `command_velocity_mode: base_link` 时保持需求 5 的行为，不引入额外变换。
-4. TF 不可用时会节流告警并将本周期目标速度置零，避免错误坐标系指令导致失控。
-
-示例（全局模式）：
-
-```yaml
-sentry_chassis_controller:
-  command_velocity_mode: global
-  command_frame_id: odom
-  base_frame_id: base_link
+```bash
+roslaunch sentry_chassis_controller sentry_chassis_controller.launch
 ```
 
-## 键盘操控（teleop_twist_keyboard）
+Gazebo 一体链路：
 
-建议先启动仿真一体链路：
+```bash
+roslaunch sentry_chassis_controller sentry_sim.launch
+```
 
-- `roslaunch sentry_chassis_controller sentry_sim.launch`
+关闭 GUI 和 Foxglove：
 
-然后在交互终端运行：
+```bash
+roslaunch sentry_chassis_controller sentry_sim.launch gui:=false with_foxglove:=false
+```
 
-- `rosrun sentry_chassis_controller teleop_keyboard.sh`
+## 常用脚本
 
-脚本默认发布到 `/cmd_vel`，并提供环境变量覆盖：
+键盘控制：
 
-- `CMD_VEL_TOPIC`：速度话题，默认 `/cmd_vel`
-- `TELEOP_SPEED`：线速度标量，默认 `0.5`
-- `TELEOP_TURN`：角速度标量，默认 `1.0`
-- `TELEOP_REPEAT_RATE`：重复发送频率，默认 `20.0`
-- `TELEOP_KEY_TIMEOUT`：按键超时，默认 `0.6`
+```bash
+rosrun sentry_chassis_controller teleop_keyboard.sh
+```
 
-示例（提高速度并改话题）：
+行为评估：
 
-- `CMD_VEL_TOPIC=/my_cmd_vel TELEOP_SPEED=0.8 TELEOP_TURN=1.4 rosrun sentry_chassis_controller teleop_keyboard.sh`
+```bash
+rosrun sentry_chassis_controller evaluate_teleop_behavior.py
+rosrun sentry_chassis_controller evaluate_teleop_keys.py
+```
 
-注意事项：
+符号自动校准：
 
-- 该命令必须在 TTY 终端中运行（例如本地终端、`docker exec -it` 终端）。
-- 若在 DevContainer 中使用，确保已完成工作区构建并可访问 ROS master。
+```bash
+rosrun sentry_chassis_controller auto_calibrate_signs.py
+rosrun sentry_chassis_controller auto_calibrate_sign_chain.py
+```
 
-## 自动行为评估脚本
+容器内 headless 回归入口：
 
-在仿真运行后，可用如下脚本自动发布 `cmd_vel` 段并输出 JSON 评估结果：
-
-- `rosrun sentry_chassis_controller evaluate_teleop_behavior.py`
-
-脚本默认评估三段行为：
-
-- `forward`: `(vx, vy, wz) = (0.6, 0.0, 0.0)`
-- `left`: `(vx, vy, wz) = (0.0, 0.6, 0.0)`
-- `rotate`: `(vx, vy, wz) = (0.0, 0.0, 0.8)`
-
-输出中包含两套判定：
-
-- `strict`: 严格轨迹约束（适合验收）
-- `directional`: 仅方向正确性约束（适合快速回归）
-
-## 在线调参与观测
-
-1. 启动控制器：
-   - `roslaunch sentry_chassis_controller sentry_chassis_controller.launch`
-2. 打开动态调参：
-   - `rosrun rqt_reconfigure rqt_reconfigure`
-3. 打开曲线观测：
-   - `rosrun rqt_plot rqt_plot`
-
-当 `publish_state: true` 时，每路 PID 会发布 `state` 话题，可用 `rqt_plot` 观察误差与输出变化。
-
-## 后续扩展建议
-
-1. 基于舵轮几何模型实现舵向角实时解算。
-2. 加入特色功能（加速度限制、小陀螺、功率控制、自锁等）。
+```bash
+./scripts/_run_teleop_eval_inside.sh
+./scripts/_run_auto_calibrate_inside.sh
+./scripts/_run_auto_calibrate_sign_chain_inside.sh
+```

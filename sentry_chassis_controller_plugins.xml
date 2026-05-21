@@ -4,7 +4,7 @@
       type="sentry_chassis_controller::SentryChassisController"
       base_class_type="controller_interface::ControllerBase">
     <description>
-      Base sentry steering chassis controller plugin.
+      Task-specific swerve controller built on rm_chassis_controllers::ChassisBase.
     </description>
   </class>
 </library>

@@ -8,6 +8,7 @@
   <arg name="with_joint_state_controller" default="true"/>
   <arg name="joint_state_publish_rate" default="50.0"/>
   <arg name="with_robot_state_publisher" default="true"/>
+  <arg name="with_default_chassis_cmd" default="true"/>
   <arg name="with_foxglove" default="true"/>
   <arg name="foxglove_backend" default="foxglove_bridge" doc="foxglove_bridge or rosbridge"/>
   <arg name="foxglove_bridge_port" default="8765"/>
@@ -38,7 +39,9 @@
         args="-z $(arg spawn_z) -param robot_description_gazebo -urdf -model sentry"
         output="screen"/>
 
-  <include file="$(find sentry_chassis_controller)/launch/sentry_chassis_controller.launch"/>
+  <include file="$(find sentry_chassis_controller)/launch/sentry_chassis_controller.launch">
+    <arg name="with_default_chassis_cmd" value="$(arg with_default_chassis_cmd)"/>
+  </include>
 
   <group if="$(arg with_joint_state_controller)">
     <param name="/joint_state_controller/type" value="joint_state_controller/JointStateController"/>

@@ -1,6 +1,20 @@
 <launch>
+  <arg name="with_default_chassis_cmd" default="true"/>
+
   <rosparam command="load" file="$(find sentry_chassis_controller)/config/chassis_controller.yaml"/>
 
   <node name="controller_spawner" pkg="controller_manager" type="spawner"
         args="sentry_chassis_controller" output="screen"/>
+
+  <node if="$(arg with_default_chassis_cmd)"
+        name="default_chassis_cmd_publisher"
+        pkg="sentry_chassis_controller"
+        type="publish_default_chassis_cmd.py"
+        output="screen">
+    <param name="power_limit" value="100000.0"/>
+    <param name="accel_linear_x" value="100.0"/>
+    <param name="accel_linear_y" value="100.0"/>
+    <param name="accel_angular_z" value="100.0"/>
+    <param name="command_source_frame" value="base_link"/>
+  </node>
 </launch>
