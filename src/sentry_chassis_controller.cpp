@@ -192,8 +192,7 @@ void SentryChassisController::moveJoint(const ros::Time& time,
     module.pivot->setCommand(use_direct_target ? velocity_angle
                                                : velocity_angle + M_PI);
     const double wheel_velocity =
-        static_cast<double>(module.wheel_rolling_sign) * module_speed /
-        module.wheel_radius * std::cos(direct_delta);
+        module_speed / module.wheel_radius * std::cos(direct_delta);
     module.wheel->setCommand(wheel_velocity);
     module.pivot->update(time, period);
     module.wheel->update(time, period);

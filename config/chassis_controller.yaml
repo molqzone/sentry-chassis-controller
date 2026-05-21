@@ -57,7 +57,7 @@ sentry_chassis_controller:
       position: [0.181, -0.181]
       pivot:
         joint: right_front_pivot_joint
-        offset: -0.020000000
+        offset: 0.000000000
         pid: *pivot_pid
       wheel:
         joint: right_front_wheel_joint
